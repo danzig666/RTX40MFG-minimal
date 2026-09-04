@@ -44,6 +44,24 @@ static_assert(offsetof(VulkanInfoPrefix, physicalDevice) == 48);
 
 using PFun_slSetVulkanInfoAbi = sl::Result(const VulkanInfoPrefix& info);
 std::atomic<PFun_slSetVulkanInfoAbi*> gOriginalSetVulkanInfo{nullptr};
+std::atomic<PFun_slSetD3DDevice*> gOriginalSetD3DDevice{nullptr};
+
+// The adapter is verified here, during Streamline's own device setup, and
+// not inside CreateFeature. Verification loads nvcuda.dll, calls cuInit,
+// enumerates devices and frees the library again; doing that synchronously
+// on the render thread in the middle of NVIDIA's feature creation -- which
+// itself brings up CUDA -- is not something the provider tolerates.
+sl::Result HookSetD3DDevice(void* device)
+{
+    auto* original = gOriginalSetD3DDevice.load(std::memory_order_acquire);
+    if (!original)
+        return sl::Result::eErrorNotInitialized;
+    const bool verified = ada_patch::ObserveD3D12Device(device);
+    mfglog::Write(L"slSetD3DDevice: adapter verified=%d failure=%u (%s)",
+        verified, ada_patch::FailureCode(),
+        ada_patch::FailureName(ada_patch::FailureCode()));
+    return original(device);
+}
 
 // A VkCommandBuffer has no route back to its VkPhysicalDevice, so this is the
 // only point where the Vulkan adapter can be identified before NGX builds the
@@ -454,6 +472,31 @@ bool InstallInterposerHooks(HMODULE interposer, const wchar_t* path) noexcept
     }
     gInterposerHooked.store(true, std::memory_order_release);
     mfglog::Write(L"slGetFeatureFunction hooked: %s", path);
+
+    // D3D device registration: the right moment to identify the adapter.
+    if (void* deviceTarget = reinterpret_cast<void*>(
+            GetProcAddress(interposer, "slSetD3DDevice")))
+    {
+        void* deviceOriginal = nullptr;
+        if (MH_CreateHook(deviceTarget,
+                reinterpret_cast<void*>(&HookSetD3DDevice), &deviceOriginal)
+            == MH_OK)
+        {
+            gOriginalSetD3DDevice.store(
+                reinterpret_cast<PFun_slSetD3DDevice*>(deviceOriginal),
+                std::memory_order_release);
+            if (MH_EnableHook(deviceTarget) == MH_OK)
+                mfglog::Write(L"slSetD3DDevice hooked");
+            else
+            {
+                gOriginalSetD3DDevice.store(nullptr, std::memory_order_release);
+                MH_RemoveHook(deviceTarget);
+                mfglog::Write(L"slSetD3DDevice hook failed to enable");
+            }
+        }
+        else
+            mfglog::Write(L"slSetD3DDevice hook failed");
+    }
 
     // Optional: only present when the game drives Streamline over Vulkan.
     if (void* vulkanTarget = reinterpret_cast<void*>(

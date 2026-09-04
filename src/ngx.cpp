@@ -103,6 +103,8 @@ std::atomic<uint64_t> gFrameGenerationEvaluates{0};
 std::atomic<uint64_t> gFrameGenerationEvaluateFailures{0};
 std::atomic<uint64_t> gFrameGenerationCreateFailures{0};
 std::atomic<bool> gApplyTemporalPatch{true};
+// Diagnostic: false skips adapter verification at CreateFeature entirely.
+std::atomic<bool> gVerifyAtCreate{true};
 
 std::atomic<HMODULE> gProvider{nullptr};
 std::wstring gProviderPath;
@@ -149,13 +151,29 @@ void PrepareProvider(void* d3d12CommandList, const wchar_t* api) noexcept
         const wchar_t* path = gProviderPath.empty()
             ? L"(unknown)" : gProviderPath.c_str();
 
-        // D3D12 is authoritative when we have the command list; otherwise
-        // fall back to whatever slSetVulkanInfo established.
-        bool adapter = false;
-        if (d3d12CommandList)
+        // Prefer the verification done at slSetD3DDevice / slSetVulkanInfo
+        // during Streamline setup. Only if that never ran, and only when
+        // allowed, recover the adapter from the command list here -- that
+        // path initializes CUDA on the render thread in the middle of
+        // NVIDIA's own feature creation, which is a bad moment for it.
+        bool adapter = ada_patch::AdapterVerified();
+        if (adapter)
+        {
+            mfglog::Write(L"%s: adapter already verified during Streamline "
+                L"setup; no CUDA work at CreateFeature", api);
+        }
+        else if (d3d12CommandList
+            && gVerifyAtCreate.load(std::memory_order_acquire))
+        {
+            mfglog::Write(L"%s: adapter NOT verified earlier; verifying from "
+                L"the command list now (late path)", api);
             adapter = AdapterFromCommandList(d3d12CommandList);
-        if (!adapter)
-            adapter = ada_patch::AdapterVerified();
+        }
+        else if (d3d12CommandList)
+        {
+            mfglog::Write(L"%s: adapter not verified and VerifyAtCreate=0; "
+                L"leaving the provider untouched", api);
+        }
 
         if (!adapter)
         {
@@ -223,11 +241,8 @@ void ReportFrameGenerationCreate(const wchar_t* api, NgxResult result,
         static_cast<unsigned long long>(failure));
     if (failure == 1)
     {
-        mfglog::Write(L"  To isolate the cause, in RTX40MFG.ini:");
-        mfglog::Write(L"    AdaTemporalPatch=0  -> succeeds? the rebuilt Ada "
-            L"kernel is what NVIDIA rejects");
-        mfglog::Write(L"    ArchGates=0 too     -> succeeds only now? the "
-            L"Blackwell path itself fails on Ada");
+        mfglog::Write(L"  Bisect with the switches in RTX40MFG.ini; the "
+            L"Switches line at the top of this log says what was active.");
     }
 }
 
@@ -404,5 +419,10 @@ void SetApplyTemporalPatch(bool apply) noexcept
 uint64_t CreateFailures() noexcept
 {
     return gFrameGenerationCreateFailures.load(std::memory_order_relaxed);
+}
+
+void SetVerifyAtCreate(bool verify) noexcept
+{
+    gVerifyAtCreate.store(verify, std::memory_order_release);
 }
 }

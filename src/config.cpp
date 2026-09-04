@@ -34,6 +34,8 @@ Settings Load(const wchar_t* executableDirectory) noexcept
         L"MFG", L"FlipMetering", 1, path.c_str()) != 0;
     settings.streamlineMax = GetPrivateProfileIntW(
         L"MFG", L"StreamlineMax", 1, path.c_str()) != 0;
+    settings.verifyAtCreate = GetPrivateProfileIntW(
+        L"MFG", L"VerifyAtCreate", 1, path.c_str()) != 0;
     return settings;
 }
 }

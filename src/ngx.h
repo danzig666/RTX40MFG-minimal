@@ -18,4 +18,8 @@ void SetApplyTemporalPatch(bool apply) noexcept;
 
 // How many times NVIDIA has refused to create the frame-generation feature.
 uint64_t CreateFailures() noexcept;
+
+// Diagnostic: false never runs adapter verification inside CreateFeature,
+// even when the early Streamline-setup verification did not happen.
+void SetVerifyAtCreate(bool verify) noexcept;
 }

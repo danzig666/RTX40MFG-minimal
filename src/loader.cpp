@@ -308,6 +308,7 @@ void Initialize()
     gFlipMetering.store(settings.flipMetering, std::memory_order_release);
     gStreamlineMax.store(settings.streamlineMax, std::memory_order_release);
     ngx::SetApplyTemporalPatch(settings.adaTemporalPatch);
+    ngx::SetVerifyAtCreate(settings.verifyAtCreate);
     if (settings.log)
     {
         mfglog::Open(gExecutableDirectory.c_str());
@@ -322,9 +323,10 @@ void Initialize()
             MFG_VERSION_STRING, settings.multiplier);
     // Every switch, so a log is self-describing without the ini beside it.
     mfglog::Write(L"Switches: ArchGates=%d AdaTemporalPatch=%d FlipMetering=%d "
-        L"StreamlineMax=%d LegacyNgxPatch=%d",
+        L"StreamlineMax=%d VerifyAtCreate=%d LegacyNgxPatch=%d",
         settings.archGates, settings.adaTemporalPatch, settings.flipMetering,
-        settings.streamlineMax, settings.legacyNgxPatch);
+        settings.streamlineMax, settings.verifyAtCreate,
+        settings.legacyNgxPatch);
     mfglog::Write(L"Host: %s", executable.c_str());
 
     if (MH_Initialize() != MH_OK)

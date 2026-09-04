@@ -32,6 +32,9 @@ struct Settings
     bool flipMetering = true;
     // Diagnostic: 0 leaves the Streamline plugin's frame-count clamp alone.
     bool streamlineMax = true;
+    // Diagnostic: 0 never verifies the adapter inside CreateFeature (the
+    // late path). Normal runs verify at slSetD3DDevice instead.
+    bool verifyAtCreate = true;
 };
 
 // Reads RTX40MFG.ini beside the executable. Missing file yields defaults.
