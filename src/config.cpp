@@ -37,7 +37,7 @@ Settings Load(const wchar_t* executableDirectory) noexcept
     settings.verifyAtCreate = GetPrivateProfileIntW(
         L"MFG", L"VerifyAtCreate", 1, path.c_str()) != 0;
     settings.ngxHooks = GetPrivateProfileIntW(
-        L"MFG", L"NgxHooks", 1, path.c_str()) != 0;
+        L"MFG", L"NgxHooks", 0, path.c_str()) != 0;
     return settings;
 }
 }

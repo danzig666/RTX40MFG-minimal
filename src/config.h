@@ -36,10 +36,11 @@ struct Settings
     // late path). Normal runs verify at slSetD3DDevice instead.
     bool verifyAtCreate = true;
     // 0 = never detour the provider's CreateFeature/EvaluateFeature exports.
-    // Those detours only produce diagnostics; the patch itself does not need
-    // them, and an inline jump written into NVIDIA's entry points is itself a
-    // suspect when creation fails with PlatformError.
-    bool ngxHooks = true;
+    // Confirmed on real hardware: a plain inline jump written into those
+    // entry points makes NVIDIA refuse to create the feature (PlatformError),
+    // and with the detours absent everything works. They exist only to read
+    // result codes when nothing else explains a failure. Off by default.
+    bool ngxHooks = false;
 };
 
 // Reads RTX40MFG.ini beside the executable. Missing file yields defaults.

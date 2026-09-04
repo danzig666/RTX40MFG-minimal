@@ -36,7 +36,7 @@ std::atomic<bool> gLegacyNgxPatch{false};
 std::atomic<bool> gArchGates{true};
 std::atomic<bool> gFlipMetering{true};
 std::atomic<bool> gStreamlineMax{true};
-std::atomic<bool> gNgxHooks{true};
+std::atomic<bool> gNgxHooks{false};
 
 namespace
 {

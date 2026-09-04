@@ -113,7 +113,7 @@ std::atomic<bool> gHookInstalled{false};
 std::atomic<uint64_t> gFrameGenerationCreates{0};
 std::atomic<uint64_t> gEnsureAttempts{0};
 std::atomic<uint32_t> gLastEnsureFailure{0xFFFFFFFFu};
-std::atomic<bool> gNgxHooks{true};
+std::atomic<bool> gNgxHooks{false};
 
 // Resolves the D3D12 device that owns the command list NGX was handed. That
 // is the adapter frame generation will actually run on.
@@ -407,10 +407,13 @@ bool InstallCreateFeatureHooks(HMODULE provider, const wchar_t* path) noexcept
     RegisterProvider(provider, path);
     if (!gNgxHooks.load(std::memory_order_acquire))
     {
-        mfglog::Write(L"NGX CreateFeature/EvaluateFeature detours: SKIPPED "
+        mfglog::Write(L"NGX CreateFeature/EvaluateFeature detours: off "
             L"(NgxHooks=0); the provider's exports are left untouched");
         return false;
     }
+    mfglog::Write(L"WARNING: NgxHooks=1 writes inline detours into the "
+        L"provider's exports. On provider 310.7.128 that alone makes NVIDIA "
+        L"refuse the feature (PlatformError). Diagnostic use only.");
 
     const bool d3d12 = InstallEntry(provider, "NVSDK_NGX_D3D12_CreateFeature",
         reinterpret_cast<void*>(&HookD3D12CreateFeature), gOriginalD3D12Create,

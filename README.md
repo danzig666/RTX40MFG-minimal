@@ -1,24 +1,23 @@
 # mfg4rtx4k — minimal Ada MFG core
 
-> ## ⚠️ UNTESTED
+> ## Status: working on real hardware (D3D12), Vulkan untested
 >
-> **This has never been run on a GPU.** It compiles cleanly and the logic was
-> derived from a working project, but as of the first release **no one has
-> loaded it into a game, on any hardware, even once.** It has not been shown
-> to produce a single generated frame.
+> Confirmed on an RTX 40 GPU with *007 First Light* (D3D12, DLSS-G provider
+> 310.7.128, driver-OTA Streamline plugin 2.x): the game's menu exposes
+> 2x–6x, the runtime accepts the request, the rebuilt Ada kernel is
+> published, and `DLSSGState.numFramesActuallyPresented` reports **2 at 2x
+> and 4 at 4x**.
 >
-> Nothing here is known to work. It may do nothing, crash the game, hang the
-> GPU, or produce a broken image. If you run it, you are the first test.
+> ```
+> [slSetD3DDevice] Ada temporal patch: ready=1
+> [state] DLSSGState: status=eOk presented=2 max=5      (2x)
+> [state] DLSSGState: status=eOk presented=4 max=5      (4x)
+> ```
 >
-> The NGX ABI is no longer guesswork — the feature ID, the result codes and
-> all three `CreateFeature` signatures are verified against NVIDIA's own SDK
-> headers (see below). What remains unverified is **behaviour**: whether
-> hooking `slGetFeatureFunction` lands before the game caches the setter,
-> whether `slSetVulkanInfo` fires in a given Vulkan game, and whether NVIDIA's
-> runtime accepts the rebuilt Ada kernel at all.
->
-> Reports — success or failure, with `RTX40MFG.log` attached — are the whole
-> point of this release.
+> Still unverified: image quality of the generated frames (the temporal
+> correction's actual visual effect), the **Vulkan** path, and any provider
+> other than 310.7.128. Still unsupported research software: it patches
+> NVIDIA binaries in memory on a path NVIDIA does not certify for Ada.
 
 A stripped-down rewrite of [dashdogy/RTX40MFG-Unlock](https://github.com/dashdogy/RTX40MFG-Unlock):
 one `.asi`, one `.ini`, and only the three mechanisms that actually make DLSS
@@ -82,6 +81,36 @@ DLSS Frame Generation, and
 If the log shows the provider was patched but frame pacing looks unchanged,
 toggle Frame Generation off and on, or restart. The DLSS-G feature has to be
 created *after* the patch is published.
+
+## Provider version
+
+## What broke, and what fixed it
+
+Getting from "everything is accepted" to "frames appear" took a bisection on
+real hardware, and the answer was not any of the byte patches. Two things this
+port had *simplified* away from the upstream project turned out to be the
+reasons it did not work:
+
+1. **Adapter verification inside `CreateFeature`.** Recovering the D3D12
+   device from the command list at feature-creation time looked neater than
+   hooking `slSetD3DDevice`. But verification loads `nvcuda.dll`, calls
+   `cuInit`, enumerates devices and frees the library — synchronously, on the
+   render thread, in the middle of NVIDIA bringing up its own CUDA context.
+   Verification now happens at `slSetD3DDevice`, as upstream does.
+
+2. **Inline detours on the provider's exports.** The upstream project hooks
+   `NVSDK_NGX_D3D12_CreateFeature` through a deliberately careful
+   atomic-hotpatch framework; the RenoDx fork never touches the provider's
+   entry points at all. This port replaced the framework with plain MinHook.
+   With those detours present, NVIDIA refuses feature creation with
+   `NVSDK_NGX_Result_FAIL_PlatformError`; without them it works. The kernel
+   patch never needed them — it swaps a pointer in the provider's data
+   section, and `slDLSSGSetOptions` (hooked at the Streamline layer) fires
+   right before feature creation. The detours are kept only as an opt-in
+   diagnostic (`NgxHooks=1`) for reading result codes.
+
+Every switch in `RTX40MFG.ini` exists because bisecting this needed it; the
+defaults are the working configuration.
 
 ## Provider version
 
@@ -309,7 +338,8 @@ src/
 ├── patches.cpp/.h      the two byte patches                           245
 ├── gates.cpp           arch gates + flip metering                     290
 ├── streamline.cpp/.h   slGetFeatureFunction, SetOptions, VulkanInfo    281
-├── ngx.cpp/.h          CreateFeature detours (D3D12 + Vulkan)         234
+├── ngx.cpp/.h          provider registration, Ada patch trigger,      ~420
+│                       optional diagnostic detours
 ├── ada_patch.cpp/.h    Ada SM89 temporal correction                 1,326
 ├── provider_policy.*   supported DLSS-G provider versions             159
 └── version.h           version string                                   5
