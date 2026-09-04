@@ -7,6 +7,7 @@
 #include <MinHook.h>
 
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 
@@ -49,6 +50,35 @@ constexpr uint32_t kFeatureFrameGeneration = 11;
 constexpr NgxResult kNgxResultSuccess = 0x1u;
 constexpr NgxResult kNgxResultFail = 0xBAD00000u;
 
+// Names for the NVSDK_NGX_Result failure family (nvsdk_ngx_defs.h).
+const wchar_t* NgxResultName(NgxResult result) noexcept
+{
+    switch (result)
+    {
+    case 0x1u:        return L"Success";
+    case 0xBAD00000u: return L"Fail";
+    case 0xBAD00001u: return L"FeatureNotSupported";
+    case 0xBAD00002u: return L"PlatformError (graphics API / OS / NvAPI)";
+    case 0xBAD00003u: return L"FeatureAlreadyExists";
+    case 0xBAD00004u: return L"FeatureNotFound";
+    case 0xBAD00005u: return L"InvalidParameter";
+    case 0xBAD00006u: return L"ScratchBufferTooSmall";
+    case 0xBAD00007u: return L"NotInitialized";
+    case 0xBAD00008u: return L"UnsupportedInputFormat";
+    case 0xBAD00009u: return L"RWFlagMissing";
+    case 0xBAD0000Au: return L"MissingInput";
+    case 0xBAD0000Bu: return L"UnableToInitializeFeature";
+    case 0xBAD0000Cu: return L"OutOfDate";
+    case 0xBAD0000Du: return L"OutOfGPUMemory";
+    case 0xBAD0000Eu: return L"UnsupportedFormat";
+    case 0xBAD0000Fu: return L"UnableToWriteToAppDataPath";
+    case 0xBAD00010u: return L"UnsupportedParameter";
+    case 0xBAD00011u: return L"Denied";
+    case 0xBAD00012u: return L"NotImplemented";
+    }
+    return L"unknown";
+}
+
 using NgxEvaluateFeatureFn = NgxResult (*)(void* commandList,
     const void* handle, const void* parameters, void* callback);
 
@@ -71,6 +101,7 @@ std::atomic<NgxEvaluateFeatureFn> gOriginalVkEvaluate{nullptr};
 std::atomic<const void*> gFrameGenerationHandle{nullptr};
 std::atomic<uint64_t> gFrameGenerationEvaluates{0};
 std::atomic<uint64_t> gFrameGenerationEvaluateFailures{0};
+std::atomic<uint64_t> gFrameGenerationCreateFailures{0};
 std::atomic<bool> gApplyTemporalPatch{true};
 
 std::atomic<HMODULE> gProvider{nullptr};
@@ -176,14 +207,27 @@ void ReportFrameGenerationCreate(const wchar_t* api, NgxResult result,
         gFrameGenerationHandle.store(handle, std::memory_order_release);
         mfglog::Write(L"%s: CreateFeature(FrameGeneration) -> SUCCESS "
             L"handle=%p", api, handle);
+        return;
     }
-    else
+    // The wrapper retries every frame when creation fails. Log the first,
+    // then powers of two, so the log stays readable and still shows it is
+    // still failing.
+    const uint64_t failure =
+        gFrameGenerationCreateFailures.fetch_add(1, std::memory_order_relaxed)
+        + 1;
+    if (failure != 1 && (failure & (failure - 1)) != 0)
+        return;
+    mfglog::Write(L"%s: CreateFeature(FrameGeneration) -> FAILED "
+        L"result=0x%08X (%s), failure #%llu. NVIDIA rejected the feature; "
+        L"nothing will generate.", api, result, NgxResultName(result),
+        static_cast<unsigned long long>(failure));
+    if (failure == 1)
     {
-        mfglog::Write(L"%s: CreateFeature(FrameGeneration) -> FAILED "
-            L"result=0x%08X. NVIDIA rejected the feature; nothing will "
-            L"generate. If the Ada temporal patch was applied just before "
-            L"this, retry with AdaTemporalPatch=0 in RTX40MFG.ini.",
-            api, result);
+        mfglog::Write(L"  To isolate the cause, in RTX40MFG.ini:");
+        mfglog::Write(L"    AdaTemporalPatch=0  -> succeeds? the rebuilt Ada "
+            L"kernel is what NVIDIA rejects");
+        mfglog::Write(L"    ArchGates=0 too     -> succeeds only now? the "
+            L"Blackwell path itself fails on Ada");
     }
 }
 
@@ -355,5 +399,10 @@ bool InstallCreateFeatureHooks(HMODULE provider, const wchar_t* path) noexcept
 void SetApplyTemporalPatch(bool apply) noexcept
 {
     gApplyTemporalPatch.store(apply, std::memory_order_release);
+}
+
+uint64_t CreateFailures() noexcept
+{
+    return gFrameGenerationCreateFailures.load(std::memory_order_relaxed);
 }
 }

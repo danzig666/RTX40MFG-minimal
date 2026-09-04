@@ -28,6 +28,8 @@ Settings Load(const wchar_t* executableDirectory) noexcept
         L"MFG", L"LegacyNgxPatch", 0, path.c_str()) != 0;
     settings.adaTemporalPatch = GetPrivateProfileIntW(
         L"MFG", L"AdaTemporalPatch", 1, path.c_str()) != 0;
+    settings.archGates = GetPrivateProfileIntW(
+        L"MFG", L"ArchGates", 1, path.c_str()) != 0;
     return settings;
 }
 }

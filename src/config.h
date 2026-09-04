@@ -24,6 +24,10 @@ struct Settings
     // then uses NVIDIA's stock Ada kernel (midpoint artifacts at 3x+), which
     // isolates whether the rebuilt kernel is what stops frames appearing.
     bool adaTemporalPatch = true;
+    // Diagnostic: 0 leaves the provider's arch-id comparisons alone. The
+    // advertised maximum then stays 1 (2x only), which is the stock Ada
+    // path -- the baseline to compare every other run against.
+    bool archGates = true;
 };
 
 // Reads RTX40MFG.ini beside the executable. Missing file yields defaults.

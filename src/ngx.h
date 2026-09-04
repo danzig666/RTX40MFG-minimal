@@ -2,6 +2,8 @@
 
 #include <Windows.h>
 
+#include <cstdint>
+
 namespace ngx
 {
 // Detours the DLSS-G provider's CreateFeature entries -- D3D12, Vulkan and
@@ -13,4 +15,7 @@ bool InstallCreateFeatureHooks(HMODULE provider, const wchar_t* path) noexcept;
 // Diagnostic switch: false leaves NVIDIA's stock Ada kernel in place, so a
 // generation failure can be attributed to the rebuilt kernel or ruled out.
 void SetApplyTemporalPatch(bool apply) noexcept;
+
+// How many times NVIDIA has refused to create the frame-generation feature.
+uint64_t CreateFailures() noexcept;
 }

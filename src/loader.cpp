@@ -33,6 +33,7 @@
 
 std::atomic<uint32_t> gRequestedMultiplier{0};
 std::atomic<bool> gLegacyNgxPatch{false};
+std::atomic<bool> gArchGates{true};
 
 namespace
 {
@@ -175,7 +176,11 @@ void InspectModule(HMODULE module)
         // The arch gates are what actually raise the advertised frame count.
         // The older device-support pattern is kept because it still matches on
         // some provider builds, but it is not what does the work.
-        patches::PatchArchGates(module, path.c_str());
+        if (gArchGates.load(std::memory_order_acquire))
+            patches::PatchArchGates(module, path.c_str());
+        else
+            mfglog::Write(L"Arch gates: SKIPPED (ArchGates=0); advertised "
+                L"maximum stays at the stock Ada value");
         if (gLegacyNgxPatch.load(std::memory_order_acquire))
             patches::PatchNgxDeviceSupport(module, path.c_str());
         else
@@ -287,10 +292,10 @@ void Initialize()
     const config::Settings settings = config::Load(gExecutableDirectory.c_str());
     gRequestedMultiplier.store(settings.multiplier, std::memory_order_release);
     gLegacyNgxPatch.store(settings.legacyNgxPatch, std::memory_order_release);
+    gArchGates.store(settings.archGates, std::memory_order_release);
     ngx::SetApplyTemporalPatch(settings.adaTemporalPatch);
-    if (!settings.adaTemporalPatch)
-        mfglog::Write(L"AdaTemporalPatch=0: the rebuilt Ada kernel will NOT be "
-            L"published (diagnostic run)");
+    mfglog::Write(L"Switches: ArchGates=%d AdaTemporalPatch=%d LegacyNgxPatch=%d",
+        settings.archGates, settings.adaTemporalPatch, settings.legacyNgxPatch);
     if (settings.log)
     {
         mfglog::Open(gExecutableDirectory.c_str());
