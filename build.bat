@@ -18,7 +18,7 @@ cl %COMMON% /c ^
   /I..\src\third_party\minhook\include /I..\src\third_party\minhook\src /I..\src\third_party\minhook\src\hde
 if errorlevel 1 goto :fail
 cl %COMMON% /std:c++20 /LD ^
-  ..\src\loader.cpp ..\src\config.cpp ..\src\log.cpp ..\src\patches.cpp ^
+  ..\src\loader.cpp ..\src\config.cpp ..\src\log.cpp ..\src\patches.cpp ..\src\gates.cpp ^
   ..\src\streamline.cpp ..\src\ngx.cpp ..\src\ada_patch.cpp ..\src\provider_policy.cpp ^
   /I"%STREAMLINE_ROOT%\include" /I..\src\third_party\minhook\include ^
   /Fe:RTX40MFG.asi ^

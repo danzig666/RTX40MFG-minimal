@@ -30,9 +30,10 @@ differently:
 
 | Question | Stock RTX 40 | Here |
 |---|---|---|
-| Is this GPU allowed to run MFG? | no | yes |
+| What architecture is this? | below Blackwell → 1 frame | reads as Ada-allowed |
 | How many frames may be requested? | 1 | 1–3 |
 | Where in time does Ada evaluate them? | always `t = 0.5` | `t` and `1 - t` |
+| How is multi-frame output paced? | hardware flip metering (Ada has none) | software RSYNC |
 
 The third one is the part that matters. Forcing `numFramesToGenerate = 3`
 without it makes Ada evaluate all three generated frames at the midpoint, so
@@ -128,6 +129,44 @@ upgrading do. Points to watch:
 
 Do not bundle NVIDIA or Streamline DLLs *with this mod* — it ships none by
 design, and patches whatever the game loads.
+
+## How the capability is actually decided
+
+Getting the frame count raised is not one switch. The provider gates
+multi-frame on the **NVAPI architecture id**, comparing against `0x1b0`
+(GB20x, Blackwell) in more than one place, and the places do different jobs:
+
+```asm
+; DLSSGInstanceManager::PopulateParameters -- decides what to advertise
+81 FD B0 01 00 00   cmp ebp, 0x1b0
+jl  <max = 1>                             ; Ada lands here
+mov edi, 5
+...                 Set("DLSSG.MultiFrameCountMax", edi)
+
+; a separate runtime capability flag that drives generation itself
+3D B0 01 00 00      cmp eax, 0x1b0
+0F 93 C0            setae al
+88 47 28            mov byte ptr [rdi+0x28], al
+```
+
+Every `cmp` against `0x1b0` is rewritten to `0x190` (AD10x, Ada); a
+`mov r32, 0x1b0` is the arch-id lookup table, not a gate, and is left alone.
+**Patching the first without the second is the worst outcome** — the options
+appear, the request is accepted, and the game renders black.
+
+Then the frames have to reach the screen. Blackwell paces multi-frame output
+with hardware flip metering; Ada has none, so the present queue waits for
+something that never happens and 3x+ freezes the image while audio continues.
+Streamline already ships the software fallback (RSYNC) and the plugin logs
+`"FG1 DLL has been detected"` when it selects it — so the flag it writes is
+found by that marker and pinned. Neither the flag's offset nor its polarity can
+be hardcoded: they move between plugin builds, so both are read out of the
+plugin's own fallback code at runtime.
+
+Everything is applied to the **mapped image only**. NGX verifies the provider's
+Authenticode signature when it loads the file, so the same bytes changed on
+disk make frame generation disappear entirely; the mapped copy is never
+re-checked.
 
 ## Graphics APIs
 
@@ -233,7 +272,9 @@ Kept:
 | Component | Note |
 |---|---|
 | Ada temporal correction | the genuinely necessary part; kept intact |
-| NGX device-support patch | 6-byte NOP, unchanged |
+| Arch gates (`0x1b0` → `0x190`) | what actually raises the advertised frame count |
+| Flip metering fallback | without it, 3x+ generates frames that never appear |
+| NGX device-support patch | 6-byte NOP; matches on some builds, not what does the work |
 | Streamline maximum patch | 3-byte NOP, unchanged |
 | `slDLSSGSetOptions` interception | reduced to ~10 meaningful lines |
 | Provider version policy | kept — patching unknown PTX is how you get crashes |
@@ -266,6 +307,7 @@ src/
 ├── config.cpp/.h       RTX40MFG.ini                                    48
 ├── log.cpp/.h          RTX40MFG.log                                    81
 ├── patches.cpp/.h      the two byte patches                           245
+├── gates.cpp           arch gates + flip metering                     290
 ├── streamline.cpp/.h   slGetFeatureFunction, SetOptions, VulkanInfo    281
 ├── ngx.cpp/.h          CreateFeature detours (D3D12 + Vulkan)         234
 ├── ada_patch.cpp/.h    Ada SM89 temporal correction                 1,326
@@ -282,4 +324,12 @@ The mechanisms, the byte patterns, the provider profiles and the entire
 temporal correction are the work of **Michael Robles** in
 [RTX40MFG-Unlock](https://github.com/dashdogy/RTX40MFG-Unlock), MIT licensed —
 see `LICENSE.upstream`. This repository is a reduction of that work, not an
-independent discovery. MinHook is © Tsuda Kageyu, BSD 2-clause.
+independent discovery.
+
+The **arch-gate** and **flip-metering** techniques in `src/gates.cpp`, and the
+analysis of why they are both required, come from
+[mavismmg/MFGAdaUnlock-RenoDx](https://github.com/mavismmg/MFGAdaUnlock-RenoDx),
+also MIT. That project diagnosed what the byte patches inherited from upstream
+do not cover; this is a port of its findings into this codebase.
+
+MinHook is © Tsuda Kageyu, BSD 2-clause.

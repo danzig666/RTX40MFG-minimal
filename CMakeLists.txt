@@ -29,6 +29,7 @@ add_library(RTX40MFG SHARED
     src/config.cpp
     src/log.cpp
     src/patches.cpp
+    src/gates.cpp
     src/streamline.cpp
     src/ngx.cpp
     src/ada_patch.cpp

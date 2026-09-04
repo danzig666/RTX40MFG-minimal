@@ -142,6 +142,9 @@ void InspectModule(HMODULE module)
             patches::PatchStreamlineMaximum(module, path.c_str());
         if (result.candidate && result.patched)
             streamline::SetWrapperCompiledMaximum(result.compiledMaximum);
+        // Ada has no hardware flip metering. Without this, 3x and above
+        // generate frames that never reach the screen.
+        patches::PatchFlipMetering(module, path.c_str());
     }
 
     if (IsDlssgProvider(module))
@@ -168,6 +171,10 @@ void InspectModule(HMODULE module)
             return;
         }
         mfglog::Write(L"  ^ supported; patching");
+        // The arch gates are what actually raise the advertised frame count.
+        // The older device-support pattern is kept because it still matches on
+        // some provider builds, but it is not what does the work.
+        patches::PatchArchGates(module, path.c_str());
         patches::PatchNgxDeviceSupport(module, path.c_str());
         ngx::InstallCreateFeatureHooks(module, path.c_str());
     }
