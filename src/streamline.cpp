@@ -194,6 +194,18 @@ const wchar_t* ResultName(sl::Result result) noexcept
     return index < _countof(kResultNames) ? kResultNames[index] : L"unknown";
 }
 
+const wchar_t* ModeName(sl::DLSSGMode mode) noexcept
+{
+    switch (mode)
+    {
+    case sl::DLSSGMode::eOff:     return L"eOff";
+    case sl::DLSSGMode::eOn:      return L"eOn";
+    case sl::DLSSGMode::eAuto:    return L"eAuto";
+    case sl::DLSSGMode::eDynamic: return L"eDynamic";
+    default:                      return L"?";
+    }
+}
+
 void DescribeStatus(sl::DLSSGStatus status, wchar_t* out, size_t count) noexcept
 {
     const uint32_t bits = static_cast<uint32_t>(status);
@@ -246,9 +258,11 @@ void LogState(const sl::ViewportHandle& viewport,
     wchar_t status[192]{};
     DescribeStatus(state.status, status, _countof(status));
     mfglog::Write(L"  [%s] DLSSGState: status=%s presented=%u max=%u "
-        L"minWH=%u vsyncOk=%u vram=%lluMB",
+        L"dynamicSupported=%u minWH=%u vsyncOk=%u vram=%lluMB",
         when, status, state.numFramesActuallyPresented,
-        state.numFramesToGenerateMax, state.minWidthOrHeight,
+        state.numFramesToGenerateMax,
+        static_cast<uint32_t>(state.bIsDynamicMFGSupported),
+        state.minWidthOrHeight,
         static_cast<uint32_t>(state.bIsVsyncSupportAvailable),
         static_cast<unsigned long long>(
             state.estimatedVRAMUsageInBytes / (1024ull * 1024ull)));
@@ -292,15 +306,31 @@ sl::Result HookSetOptions(const sl::ViewportHandle& viewport,
         const sl::Result passthrough = original(viewport, options);
         if (report)
         {
-            mfglog::Write(L"slDLSSGSetOptions call=%llu gameMode=%u "
-                L"numFramesToGenerate=%u (game's own) result=%u (%s)",
+            const float target = options.structVersion >= sl::kStructVersion5
+                ? options.dynamicTargetFrameRate : -1.0f;
+            mfglog::Write(L"slDLSSGSetOptions call=%llu gameMode=%u (%s) "
+                L"numFramesToGenerate=%u dynamicTarget=%.1f (game's own) "
+                L"result=%u (%s)",
                 static_cast<unsigned long long>(call),
-                static_cast<uint32_t>(options.mode),
-                options.numFramesToGenerate,
+                static_cast<uint32_t>(options.mode), ModeName(options.mode),
+                options.numFramesToGenerate, target,
                 static_cast<uint32_t>(passthrough), ResultName(passthrough));
             if (passthrough == sl::Result::eOk && call >= 64)
                 LogState(viewport, options, L"state");
         }
+        return passthrough;
+    }
+
+    // A game asking for Dynamic has chosen its own frame count policy;
+    // forcing a fixed count on top of that would silently turn it off.
+    if (options.mode == sl::DLSSGMode::eDynamic)
+    {
+        const sl::Result passthrough = original(viewport, options);
+        if (report)
+            mfglog::Write(L"slDLSSGSetOptions call=%llu gameMode=3 (eDynamic) "
+                L"passed through despite Multiplier=%u result=%u (%s)",
+                static_cast<unsigned long long>(call), multiplier,
+                static_cast<uint32_t>(passthrough), ResultName(passthrough));
         return passthrough;
     }
 
