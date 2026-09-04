@@ -28,6 +28,10 @@ struct Settings
     // advertised maximum then stays 1 (2x only), which is the stock Ada
     // path -- the baseline to compare every other run against.
     bool archGates = true;
+    // Diagnostic: 0 leaves the Streamline plugin's flip-metering flag alone.
+    bool flipMetering = true;
+    // Diagnostic: 0 leaves the Streamline plugin's frame-count clamp alone.
+    bool streamlineMax = true;
 };
 
 // Reads RTX40MFG.ini beside the executable. Missing file yields defaults.

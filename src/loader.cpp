@@ -34,6 +34,8 @@
 std::atomic<uint32_t> gRequestedMultiplier{0};
 std::atomic<bool> gLegacyNgxPatch{false};
 std::atomic<bool> gArchGates{true};
+std::atomic<bool> gFlipMetering{true};
+std::atomic<bool> gStreamlineMax{true};
 
 namespace
 {
@@ -140,13 +142,23 @@ void InspectModule(HMODULE module)
 
     if (IsStreamlinePlugin(module))
     {
-        const patches::Result result =
-            patches::PatchStreamlineMaximum(module, path.c_str());
-        if (result.candidate && result.patched)
-            streamline::SetWrapperCompiledMaximum(result.compiledMaximum);
+        if (gStreamlineMax.load(std::memory_order_acquire))
+        {
+            const patches::Result result =
+                patches::PatchStreamlineMaximum(module, path.c_str());
+            if (result.candidate && result.patched)
+                streamline::SetWrapperCompiledMaximum(result.compiledMaximum);
+        }
+        else
+            mfglog::Write(L"Streamline maximum: SKIPPED (StreamlineMax=0): %s",
+                path.c_str());
         // Ada has no hardware flip metering. Without this, 3x and above
         // generate frames that never reach the screen.
-        patches::PatchFlipMetering(module, path.c_str());
+        if (gFlipMetering.load(std::memory_order_acquire))
+            patches::PatchFlipMetering(module, path.c_str());
+        else
+            mfglog::Write(L"Flip metering: SKIPPED (FlipMetering=0): %s",
+                path.c_str());
     }
 
     if (IsDlssgProvider(module))
@@ -293,9 +305,9 @@ void Initialize()
     gRequestedMultiplier.store(settings.multiplier, std::memory_order_release);
     gLegacyNgxPatch.store(settings.legacyNgxPatch, std::memory_order_release);
     gArchGates.store(settings.archGates, std::memory_order_release);
+    gFlipMetering.store(settings.flipMetering, std::memory_order_release);
+    gStreamlineMax.store(settings.streamlineMax, std::memory_order_release);
     ngx::SetApplyTemporalPatch(settings.adaTemporalPatch);
-    mfglog::Write(L"Switches: ArchGates=%d AdaTemporalPatch=%d LegacyNgxPatch=%d",
-        settings.archGates, settings.adaTemporalPatch, settings.legacyNgxPatch);
     if (settings.log)
     {
         mfglog::Open(gExecutableDirectory.c_str());
@@ -308,6 +320,11 @@ void Initialize()
     else
         mfglog::Write(L"RTX40MFG %s -- forced multiplier %ux",
             MFG_VERSION_STRING, settings.multiplier);
+    // Every switch, so a log is self-describing without the ini beside it.
+    mfglog::Write(L"Switches: ArchGates=%d AdaTemporalPatch=%d FlipMetering=%d "
+        L"StreamlineMax=%d LegacyNgxPatch=%d",
+        settings.archGates, settings.adaTemporalPatch, settings.flipMetering,
+        settings.streamlineMax, settings.legacyNgxPatch);
     mfglog::Write(L"Host: %s", executable.c_str());
 
     if (MH_Initialize() != MH_OK)
