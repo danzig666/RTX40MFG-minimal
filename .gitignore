@@ -1,0 +1,12 @@
+build/
+out/
+*.log
+*.asi
+*.dll
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Local working notes, not for publication
+ChatGPT-*.md

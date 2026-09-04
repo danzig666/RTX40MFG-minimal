@@ -1,0 +1,184 @@
+# mfg4rtx4k — minimal Ada MFG core
+
+> ## ⚠️ UNTESTED
+>
+> **This has never been run on a GPU.** It compiles cleanly and the logic was
+> derived from a working project, but as of the first release **no one has
+> loaded it into a game, on any hardware, even once.** It has not been shown
+> to produce a single generated frame.
+>
+> Nothing here is known to work. It may do nothing, crash the game, hang the
+> GPU, or produce a broken image. If you run it, you are the first test.
+>
+> Specifically unverified: whether `NVSDK_NGX_Feature_FrameGeneration = 11`
+> matches the provider in play, whether hooking `slGetFeatureFunction` lands
+> before the game caches the setter, and whether the rebuilt Ada kernel is
+> accepted by NVIDIA's runtime at all.
+>
+> Reports — success or failure, with `RTX40MFG.log` attached — are the whole
+> point of this release.
+
+A stripped-down rewrite of [dashdogy/RTX40MFG-Unlock](https://github.com/dashdogy/RTX40MFG-Unlock):
+one `.asi`, one `.ini`, and only the three mechanisms that actually make DLSS
+Multi Frame Generation work on RTX 40 series (Ada, SM 8.9) GPUs.
+
+This does **not** implement frame generation. Every generated frame is produced
+by NVIDIA's own DLSS-G neural model. All this does is answer three questions
+differently:
+
+| Question | Stock RTX 40 | Here |
+|---|---|---|
+| Is this GPU allowed to run MFG? | no | yes |
+| How many frames may be requested? | 1 | 1–3 |
+| Where in time does Ada evaluate them? | always `t = 0.5` | `t` and `1 - t` |
+
+The third one is the part that matters. Forcing `numFramesToGenerate = 3`
+without it makes Ada evaluate all three generated frames at the midpoint, so
+they collapse into near-duplicates instead of spacing out at ¼, ½, ¾.
+
+**Unsupported research software.** It patches NVIDIA binaries in memory on a
+path NVIDIA does not certify for Ada. Expect artifacts, stutter, black screens
+or crashes, and do not use it where anti-cheat is watching. See the untested
+warning above before you consider running it at all.
+
+## What it does
+
+```
+game
+ │
+ ▼
+sl.interposer.dll ── slGetFeatureFunction ──► our slDLSSGSetOptions
+ │                                              numFramesToGenerate = N-1
+ ▼
+sl.dlss_g.dll ─────── cmovb clamp NOPed ──────► request passes through
+ │
+ ▼
+nvngx_dlssg.dll ───── device gate NOPed
+ │                    NVSDK_NGX_D3D12_CreateFeature(FrameGeneration)
+ │                      ├── verify adapter is Ada (SM 8.9, via CUDA)
+ │                      ├── verify provider version + SHA-256 of its fatbin
+ │                      ├── rebuild the SM89 PTX: 0.5 → t / (1-t)
+ │                      └── publish a cloned kernel descriptor
+ ▼
+NVIDIA DLSS-G generates at t = .25 / .50 / .75
+```
+
+## Install
+
+Requires Windows x64, an RTX 40 GPU, a D3D12 game with working DLSS Frame
+Generation, and [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader).
+
+1. Copy `RTX40MFG.asi` and `RTX40MFG.ini` next to the game executable.
+2. Install Ultimate ASI Loader under a proxy name the game imports early —
+   commonly `dinput8.dll` or `version.dll`. Do not use a name another mod
+   already owns.
+3. Set `Multiplier` in `RTX40MFG.ini`, launch, enable Frame Generation in the
+   game.
+
+If the log shows the provider was patched but frame pacing looks unchanged,
+toggle Frame Generation off and on, or restart. The DLSS-G feature has to be
+created *after* the patch is published.
+
+Do not replace or bundle a game's Streamline or NVIDIA DLLs. The installed
+provider must be one of the versions listed in `src/provider_policy.h`
+(310.1.0 through 310.9.0).
+
+## Configuration
+
+```ini
+[MFG]
+Multiplier=4   ; 2, 3 or 4
+Log=1
+```
+
+The multiplier is also clamped to what the active wrapper natively supports
+(a wrapper compiled for 1/3/5 generated frames caps at 2×/4×/6×). Changing it
+requires a restart — there is no live UI.
+
+## Build
+
+Only the Streamline SDK's `include/` directory is needed — no NGX SDK, no
+ReShade, no Dear ImGui. MinHook is vendored.
+
+With CMake (3.20+):
+
+```bash
+cmake -B build -S . -A x64 -DSTREAMLINE_ROOT=<path to Streamline SDK>
+cmake --build build --config Release
+```
+
+Or without CMake, straight to MSVC:
+
+```bash
+set STREAMLINE_ROOT=<path to Streamline SDK>
+build.bat
+```
+
+Both produce a ~200 KB x64 DLL — `build\Release\RTX40MFG.asi` and
+`build\RTX40MFG.asi` respectively — linked against the **static** CRT, so it
+depends only on `kernel32`, `bcrypt` and `version` and needs no VC++
+redistributable beside the game.
+
+Both paths are verified on VS 2019 Build Tools 14.29 with Windows SDK
+10.0.19041, and compile clean at `/W4`.
+
+## What was cut, and why
+
+The upstream project is ~14,500 lines of native code, `patcher.cpp` alone
+~6,700. Almost all of that supports being *universal* — every game, both
+graphics APIs, every wrapper delivery path, a live UI. None of it is required
+to demonstrate or use the mechanism.
+
+Kept:
+
+| Component | Note |
+|---|---|
+| Ada temporal correction | the genuinely necessary part; kept intact, Vulkan stripped |
+| NGX device-support patch | 6-byte NOP, unchanged |
+| Streamline maximum patch | 3-byte NOP, unchanged |
+| `slDLSSGSetOptions` interception | reduced to ~10 meaningful lines |
+| Provider version policy | kept — patching unknown PTX is how you get crashes |
+| MinHook | replaces the 1,000-line entry-detour framework |
+
+Cut: Vulkan, the ReShade/ImGui front end (~2,200 lines), the NGX
+`EvaluateFeature` hook, `slDLSSGGetState`, Dynamic MFG, the NVIDIA per-game
+profile manifest, all OTA wrapper handling, FPS and temporal-interval
+telemetry, UI recomposition, live reconfiguration, and 5×/6×.
+
+The design rule was **less universal, not less safe**: every identity check —
+Ada verification, provider version, the three SHA-256 digests, and the
+exactly-one-match rule on both byte patterns — is still there, and everything
+still fails closed.
+
+Two deliberate trade-offs the upstream project handles and this does not:
+
+- MinHook writes a plain jump, so a game where another mod has already
+  detoured the same entry point may not work.
+- Hooks are installed from inside the loader-lock path when a module loads,
+  which is standard practice for ASI mods but not free of risk.
+
+## Layout
+
+```
+src/
+├── loader.cpp          DllMain, config, module discovery, dispatch    288
+├── config.cpp/.h       RTX40MFG.ini                                    48
+├── log.cpp/.h          RTX40MFG.log                                    81
+├── patches.cpp/.h      the two byte patches                           245
+├── streamline.cpp/.h   slGetFeatureFunction + SetOptions              194
+├── ngx.cpp/.h          CreateFeature detour                           147
+├── ada_patch.cpp/.h    Ada SM89 temporal correction                 1,213
+├── provider_policy.*   supported DLSS-G provider versions             159
+└── version.h           version string                                   5
+```
+
+2,382 lines, against 14,499 upstream. MinHook is vendored under
+`src/third_party/` and not counted.
+
+## Credit and licence
+
+The mechanisms, the byte patterns, the provider profiles and the entire
+temporal correction are the work of **Michael Robles** in
+[RTX40MFG-Unlock](https://github.com/dashdogy/RTX40MFG-Unlock), MIT licensed —
+see `LICENSE.upstream`. This repository is a reduction of that work, not an
+independent discovery. MinHook is © Tsuda Kageyu, BSD 2-clause.
