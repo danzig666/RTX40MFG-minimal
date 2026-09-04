@@ -1,13 +1,6 @@
 MIT License
 
-Copyright (c) 2026 Michael Robles
-    -- original work: https://github.com/dashdogy/RTX40MFG-Unlock
-Copyright (c) 2026 danzig666
-    -- this reduction
-
-This project is a derivative of RTX40MFG-Unlock. The frame-generation
-mechanisms, byte patterns, provider profiles and the Ada temporal correction
-originate there and remain under the copyright above.
+Copyright (c) 2023 ThirteenAG
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -26,11 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
---------------------------------------------------------------------------
-
-MinHook, vendored under src/third_party/minhook, is Copyright (c) 2009-2017
-Tsuda Kageyu and contributors, BSD 2-clause. See its LICENSE.txt.
-
-Ultimate ASI Loader, bundled in release zips as version.dll, is Copyright (c)
-2023 ThirteenAG, MIT. See third_party/ultimate-asi-loader/LICENSE.txt.
