@@ -25,6 +25,11 @@ void SetLogCallback(LogCallback callback) noexcept;
 // Verifies the adapter behind a D3D12 device is Ada (SM 8.9) via CUDA.
 bool ObserveD3D12Device(void* device) noexcept;
 
+// Same check for Vulkan. A VkCommandBuffer carries no back-pointer to its
+// device, so unlike D3D12 the adapter cannot be recovered at CreateFeature
+// time -- it has to be captured earlier, from slSetVulkanInfo.
+bool ObserveVulkanPhysicalDevice(void* physicalDevice) noexcept;
+
 // Rebuilds and publishes the corrected Ada kernel. Requires ObserveD3D12Device
 // to have succeeded first. Idempotent: repeat calls re-validate the published
 // descriptor rather than patching again.

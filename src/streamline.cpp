@@ -1,4 +1,5 @@
 #include "streamline.h"
+#include "ada_patch.h"
 #include "config.h"
 #include "log.h"
 #include "patches.h"
@@ -10,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstring>
 
 extern std::atomic<uint32_t> gRequestedMultiplier;
@@ -23,6 +25,61 @@ std::atomic<PFun_slDLSSGSetOptions*> gOriginalSetOptions{nullptr};
 std::atomic<uint32_t> gWrapperCompiledMaximum{0};
 std::atomic<bool> gInterposerHooked{false};
 std::atomic<uint64_t> gSetOptionsCalls{0};
+
+// Stable pointer-sized prefix of sl::VulkanInfo v1-v3. Mirrored here so the
+// core needs no Vulkan SDK header; the fixed ABI offsets are asserted below.
+struct VulkanInfoPrefix
+{
+    sl::BaseStructure* next = nullptr;
+    sl::StructType structType{};
+    size_t structVersion = 0;
+    void* device = nullptr;
+    void* instance = nullptr;
+    void* physicalDevice = nullptr;
+};
+static_assert(offsetof(VulkanInfoPrefix, device) == 32);
+static_assert(offsetof(VulkanInfoPrefix, physicalDevice) == 48);
+
+using PFun_slSetVulkanInfoAbi = sl::Result(const VulkanInfoPrefix& info);
+std::atomic<PFun_slSetVulkanInfoAbi*> gOriginalSetVulkanInfo{nullptr};
+
+// A VkCommandBuffer has no route back to its VkPhysicalDevice, so this is the
+// only point where the Vulkan adapter can be identified before NGX builds the
+// frame generation pipeline.
+sl::Result HookSetVulkanInfo(const VulkanInfoPrefix& info)
+{
+    auto* original = gOriginalSetVulkanInfo.load(std::memory_order_acquire);
+    if (!original)
+        return sl::Result::eErrorNotInitialized;
+
+    void* physicalDevice = nullptr;
+    __try
+    {
+        if (info.structVersion >= sl::kStructVersion1
+            && info.structVersion <= sl::kStructVersion3)
+            physicalDevice = info.physicalDevice;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        physicalDevice = nullptr;
+    }
+
+    if (!physicalDevice)
+    {
+        mfglog::Write(L"slSetVulkanInfo: no usable physicalDevice "
+            L"(structVersion=%zu); Vulkan adapter unverified",
+            info.structVersion);
+    }
+    else
+    {
+        const bool verified =
+            ada_patch::ObserveVulkanPhysicalDevice(physicalDevice);
+        mfglog::Write(L"slSetVulkanInfo: Vulkan adapter verified=%d "
+            L"failure=%u (%s)", verified, ada_patch::FailureCode(),
+            ada_patch::FailureName(ada_patch::FailureCode()));
+    }
+    return original(info);
+}
 
 // Copies only the fields the game's structVersion actually covers. The game
 // may have allocated an older, shorter DLSSGOptions; reading past its version
@@ -170,6 +227,36 @@ bool InstallInterposerHooks(HMODULE interposer, const wchar_t* path) noexcept
     }
     gInterposerHooked.store(true, std::memory_order_release);
     mfglog::Write(L"slGetFeatureFunction hooked: %s", path);
+
+    // Optional: only present when the game drives Streamline over Vulkan.
+    if (void* vulkanTarget = reinterpret_cast<void*>(
+            GetProcAddress(interposer, "slSetVulkanInfo")))
+    {
+        void* vulkanOriginal = nullptr;
+        if (MH_CreateHook(vulkanTarget,
+                reinterpret_cast<void*>(&HookSetVulkanInfo), &vulkanOriginal)
+            == MH_OK)
+        {
+            gOriginalSetVulkanInfo.store(
+                reinterpret_cast<PFun_slSetVulkanInfoAbi*>(vulkanOriginal),
+                std::memory_order_release);
+            if (MH_EnableHook(vulkanTarget) == MH_OK)
+            {
+                mfglog::Write(L"slSetVulkanInfo hooked (Vulkan path available)");
+            }
+            else
+            {
+                gOriginalSetVulkanInfo.store(nullptr,
+                    std::memory_order_release);
+                MH_RemoveHook(vulkanTarget);
+                mfglog::Write(L"slSetVulkanInfo hook failed to enable");
+            }
+        }
+        else
+        {
+            mfglog::Write(L"slSetVulkanInfo hook failed");
+        }
+    }
     return true;
 }
 }

@@ -863,6 +863,35 @@ bool VerifyAdaAdapter(const LUID& activeLuid, int& major,
     int& minor) noexcept;
 void SetFailure(Failure failure) noexcept;
 
+// Only the prefix consumed by vkGetPhysicalDeviceProperties2 is represented
+// here. Keeping the Vulkan loader dynamic avoids adding a Vulkan SDK/runtime
+// import to the universal core, while the fixed Vulkan ABI offsets are checked
+// below. The opaque properties storage is larger than VkPhysicalDeviceProperties.
+struct VulkanPhysicalDeviceIdProperties
+{
+    uint32_t sType = 1000071004u;
+    uint32_t padding = 0;
+    void* pNext = nullptr;
+    std::array<uint8_t, 16> deviceUuid{};
+    std::array<uint8_t, 16> driverUuid{};
+    std::array<uint8_t, 8> deviceLuid{};
+    uint32_t deviceNodeMask = 0;
+    uint32_t deviceLuidValid = 0;
+};
+
+struct VulkanPhysicalDeviceProperties2
+{
+    uint32_t sType = 1000059001u;
+    uint32_t padding = 0;
+    void* pNext = nullptr;
+    alignas(8) std::array<uint8_t, 1024> properties{};
+};
+
+static_assert(offsetof(VulkanPhysicalDeviceIdProperties, pNext) == 8);
+static_assert(offsetof(VulkanPhysicalDeviceIdProperties, deviceLuid) == 48);
+static_assert(offsetof(VulkanPhysicalDeviceProperties2, pNext) == 8);
+static_assert(offsetof(VulkanPhysicalDeviceProperties2, properties) == 16);
+
 void RejectAdapterUnavailable() noexcept
 {
     std::lock_guard lock(gMutex);
@@ -983,6 +1012,59 @@ bool ObserveD3D12Device(void* device) noexcept
     const LUID luid = d3d12->GetAdapterLuid();
     d3d12->Release();
     return ObserveAdapterLuid(luid, L"D3D12");
+}
+
+bool ObserveVulkanPhysicalDevice(void* physicalDevice) noexcept
+{
+    if (!physicalDevice)
+    {
+        RejectAdapterUnavailable();
+        return false;
+    }
+    using GetPhysicalDeviceProperties2 = void (WINAPI*)(
+        void*, VulkanPhysicalDeviceProperties2*);
+    HMODULE vulkan = LoadLibraryExW(L"vulkan-1.dll", nullptr,
+        LOAD_LIBRARY_SEARCH_SYSTEM32);
+    auto* getProperties = vulkan
+        ? reinterpret_cast<GetPhysicalDeviceProperties2>(
+            GetProcAddress(vulkan, "vkGetPhysicalDeviceProperties2"))
+        : nullptr;
+    if (!getProperties && vulkan)
+    {
+        getProperties = reinterpret_cast<GetPhysicalDeviceProperties2>(
+            GetProcAddress(vulkan, "vkGetPhysicalDeviceProperties2KHR"));
+    }
+    if (!getProperties)
+    {
+        if (vulkan)
+            FreeLibrary(vulkan);
+        RejectAdapterUnavailable();
+        return false;
+    }
+
+    VulkanPhysicalDeviceIdProperties identity{};
+    VulkanPhysicalDeviceProperties2 properties{};
+    properties.pNext = &identity;
+    bool queried = false;
+    __try
+    {
+        getProperties(physicalDevice, &properties);
+        queried = identity.deviceLuidValid != 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        queried = false;
+    }
+    FreeLibrary(vulkan);
+    if (!queried)
+    {
+        RejectAdapterUnavailable();
+        return false;
+    }
+
+    LUID luid{};
+    std::memcpy(&luid, identity.deviceLuid.data(), sizeof(luid));
+    return ObserveAdapterLuid(luid, L"Vulkan");
 }
 
 bool PatchProvider(HMODULE module, const wchar_t* suppliedPath) noexcept

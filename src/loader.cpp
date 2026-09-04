@@ -85,11 +85,16 @@ bool IsStreamlinePlugin(HMODULE module)
 }
 
 // The NGX DLSS-G provider: it carries the frame generation implementation and
-// is distinguished from a DLSS Super Resolution provider by its exports.
+// is distinguished from a DLSS Super Resolution provider by its exports. The
+// same DLL normally exposes both the D3D12 and the Vulkan surface, but accept
+// either so a Vulkan-only build is still recognized.
 bool IsDlssgProvider(HMODULE module)
 {
-    return provider_policy::IsDlssgImplementationModule(module)
-        && GetProcAddress(module, "NVSDK_NGX_D3D12_CreateFeature") != nullptr
+    const bool createEntry =
+        GetProcAddress(module, "NVSDK_NGX_D3D12_CreateFeature") != nullptr
+        || GetProcAddress(module, "NVSDK_NGX_VULKAN_CreateFeature") != nullptr
+        || GetProcAddress(module, "NVSDK_NGX_VULKAN_CreateFeature1") != nullptr;
+    return provider_policy::IsDlssgImplementationModule(module) && createEntry
         && GetProcAddress(module, "NVSDK_NGX_GetGPUArchitecture") != nullptr;
 }
 
@@ -164,7 +169,7 @@ void InspectModule(HMODULE module)
         }
         mfglog::Write(L"  ^ supported; patching");
         patches::PatchNgxDeviceSupport(module, path.c_str());
-        ngx::InstallCreateFeatureHook(module, path.c_str());
+        ngx::InstallCreateFeatureHooks(module, path.c_str());
     }
 }
 

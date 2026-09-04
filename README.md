@@ -15,6 +15,10 @@
 > before the game caches the setter, and whether the rebuilt Ada kernel is
 > accepted by NVIDIA's runtime at all.
 >
+> The **Vulkan** path (v0.2) is less proven still — its two `CreateFeature`
+> ABIs were reconstructed from the upstream project's forwarding shim rather
+> than from NVIDIA's headers, which were not available here.
+>
 > Reports — success or failure, with `RTX40MFG.log` attached — are the whole
 > point of this release.
 
@@ -54,7 +58,7 @@ sl.dlss_g.dll ─────── cmovb clamp NOPed ──────► requ
  │
  ▼
 nvngx_dlssg.dll ───── device gate NOPed
- │                    NVSDK_NGX_D3D12_CreateFeature(FrameGeneration)
+ │                    NVSDK_NGX_{D3D12,VULKAN}_CreateFeature(FrameGeneration)
  │                      ├── verify adapter is Ada (SM 8.9, via CUDA)
  │                      ├── verify provider version + SHA-256 of its fatbin
  │                      ├── rebuild the SM89 PTX: 0.5 → t / (1-t)
@@ -65,8 +69,9 @@ NVIDIA DLSS-G generates at t = .25 / .50 / .75
 
 ## Install
 
-Requires Windows x64, an RTX 40 GPU, a D3D12 game with working DLSS Frame
-Generation, and [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader).
+Requires Windows x64, an RTX 40 GPU, a **D3D12 or Vulkan** game with working
+DLSS Frame Generation, and
+[Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader).
 
 1. Copy `RTX40MFG.asi` and `RTX40MFG.ini` next to the game executable.
 2. Install Ultimate ASI Loader under a proxy name the game imports early —
@@ -126,6 +131,31 @@ upgrading do. Points to watch:
 Do not bundle NVIDIA or Streamline DLLs *with this mod* — it ships none by
 design, and patches whatever the game loads.
 
+## Graphics APIs
+
+Both D3D12 and Vulkan are supported. The Ada temporal correction itself is
+API-agnostic — it rewrites CUDA kernels inside the provider and does not care
+how frames reach the screen — so the only API-specific part is **how the
+adapter is identified**:
+
+| | How the Ada check gets its adapter |
+|---|---|
+| **D3D12** | straight off the command list NGX is handed, at `CreateFeature` |
+| **Vulkan** | captured earlier, from `slSetVulkanInfo` |
+
+That difference is forced: a `VkCommandBuffer` carries no back-pointer to its
+`VkDevice` or `VkPhysicalDevice`, so on Vulkan the adapter cannot be recovered
+at `CreateFeature` time. If a Vulkan game never routes its device setup through
+Streamline, `slSetVulkanInfo` never fires, the adapter stays unverified, and
+the mod refuses to patch — saying so in the log.
+
+Vulkan support deliberately omits upstream's six `NVSDK_NGX_VULKAN_Init*`
+fallback hooks. A game that bypasses Streamline for Vulkan setup is out of
+scope anyway, since the frame-count clamp lives in the Streamline wrapper.
+
+`vulkan-1.dll` is loaded dynamically and only when a Vulkan game is present —
+the binary has no Vulkan import and needs no Vulkan SDK to build.
+
 ## Configuration
 
 ```ini
@@ -176,17 +206,19 @@ Kept:
 
 | Component | Note |
 |---|---|
-| Ada temporal correction | the genuinely necessary part; kept intact, Vulkan stripped |
+| Ada temporal correction | the genuinely necessary part; kept intact |
 | NGX device-support patch | 6-byte NOP, unchanged |
 | Streamline maximum patch | 3-byte NOP, unchanged |
 | `slDLSSGSetOptions` interception | reduced to ~10 meaningful lines |
 | Provider version policy | kept — patching unknown PTX is how you get crashes |
 | MinHook | replaces the 1,000-line entry-detour framework |
 
-Cut: Vulkan, the ReShade/ImGui front end (~2,200 lines), the NGX
-`EvaluateFeature` hook, `slDLSSGGetState`, Dynamic MFG, the NVIDIA per-game
-profile manifest, all OTA wrapper handling, FPS and temporal-interval
-telemetry, UI recomposition, live reconfiguration, and 5×/6×.
+Cut: the ReShade/ImGui front end (~2,200 lines), the NGX `EvaluateFeature`
+hook, `slDLSSGGetState`, Dynamic MFG, the NVIDIA per-game profile manifest,
+all OTA wrapper handling, FPS and temporal-interval telemetry, UI
+recomposition, live reconfiguration, and 5×/6×.
+
+Vulkan was cut in the first pass and added back in v0.2 — see below.
 
 The design rule was **less universal, not less safe**: every identity check —
 Ada verification, provider version, the three SHA-256 digests, and the
@@ -204,18 +236,18 @@ Two deliberate trade-offs the upstream project handles and this does not:
 
 ```
 src/
-├── loader.cpp          DllMain, config, module discovery, dispatch    288
+├── loader.cpp          DllMain, config, module discovery, dispatch    328
 ├── config.cpp/.h       RTX40MFG.ini                                    48
 ├── log.cpp/.h          RTX40MFG.log                                    81
 ├── patches.cpp/.h      the two byte patches                           245
-├── streamline.cpp/.h   slGetFeatureFunction + SetOptions              194
-├── ngx.cpp/.h          CreateFeature detour                           147
-├── ada_patch.cpp/.h    Ada SM89 temporal correction                 1,213
+├── streamline.cpp/.h   slGetFeatureFunction, SetOptions, VulkanInfo    281
+├── ngx.cpp/.h          CreateFeature detours (D3D12 + Vulkan)         234
+├── ada_patch.cpp/.h    Ada SM89 temporal correction                 1,326
 ├── provider_policy.*   supported DLSS-G provider versions             159
 └── version.h           version string                                   5
 ```
 
-2,382 lines, against 14,499 upstream. MinHook is vendored under
+2,708 lines, against 14,499 upstream. MinHook is vendored under
 `src/third_party/` and not counted.
 
 ## Credit and licence
