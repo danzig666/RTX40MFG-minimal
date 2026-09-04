@@ -26,6 +26,7 @@ std::atomic<uint32_t> gWrapperCompiledMaximum{0};
 std::atomic<bool> gInterposerHooked{false};
 std::atomic<uint64_t> gSetOptionsCalls{0};
 std::atomic<uint64_t> gRejectedRequests{0};
+std::atomic<PFun_slDLSSGGetState*> gGetState{nullptr};
 
 // Stable pointer-sized prefix of sl::VulkanInfo v1-v3. Mirrored here so the
 // core needs no Vulkan SDK header; the fixed ABI offsets are asserted below.
@@ -226,6 +227,36 @@ sl::Result HookSetOptions(const sl::ViewportHandle& viewport,
     }
     if (call == 1)
     {
+        // Ask the wrapper directly what ceiling it is enforcing. This
+        // separates "our patches did not raise the advertised maximum" from
+        // "the maximum is fine and the refusal comes from somewhere else".
+        if (auto* getState = gGetState.load(std::memory_order_acquire))
+        {
+            sl::DLSSGState state{};
+            const sl::Result stateResult = getState(viewport, state, &options);
+            if (stateResult == sl::Result::eOk)
+            {
+                mfglog::Write(L"  DLSSGState: numFramesToGenerateMax=%u "
+                    L"status=%u minWidthOrHeight=%u",
+                    state.numFramesToGenerateMax,
+                    static_cast<uint32_t>(state.status),
+                    state.minWidthOrHeight);
+                mfglog::Write(L"  (NVIDIA documents 1 = up to 2x, "
+                    L"5 = up to 6x)");
+            }
+            else
+            {
+                mfglog::Write(L"  slDLSSGGetState failed: result=%u (%s)",
+                    static_cast<uint32_t>(stateResult),
+                    ResultName(stateResult));
+            }
+        }
+        else
+        {
+            mfglog::Write(L"  slDLSSGGetState was never resolved by the game, "
+                L"so the wrapper's ceiling could not be queried.");
+        }
+
         if (fallback == sl::Result::eOk)
         {
             mfglog::Write(L"  => The game's own request succeeds but the "
@@ -252,8 +283,20 @@ sl::Result HookGetFeatureFunction(sl::Feature feature,
 
     const sl::Result result = original(feature, functionName, function);
     if (result != sl::Result::eOk || feature != sl::kFeatureDLSS_G
-        || !functionName || !function
-        || std::strcmp(functionName, "slDLSSGSetOptions") != 0)
+        || !functionName || !function)
+        return result;
+
+    // Keep the state entry so the wrapper can be asked what it believes the
+    // generated-frame ceiling is. Not hooked -- only borrowed.
+    if (std::strcmp(functionName, "slDLSSGGetState") == 0)
+    {
+        gGetState.store(reinterpret_cast<PFun_slDLSSGGetState*>(function),
+            std::memory_order_release);
+        mfglog::Write(L"slDLSSGGetState resolved (kept for diagnostics)");
+        return result;
+    }
+
+    if (std::strcmp(functionName, "slDLSSGSetOptions") != 0)
         return result;
 
     // Never chain onto ourselves if the game resolves the entry twice.
