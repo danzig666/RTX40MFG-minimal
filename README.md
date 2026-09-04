@@ -17,9 +17,15 @@ watching.
    2x–6x. Pick one.
 
 `version.dll` is [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader),
-which loads the `.asi`. Some games only pick it up under a different proxy
-name — if nothing happens (no `RTX40MFG.log` appears), rename it to
-`dinput8.dll` or `winmm.dll`. *DOOM: The Dark Ages* needs it as `version.dll`.
+which loads the `.asi`. Games differ in which proxy name they load — if
+nothing happens (no `RTX40MFG.log` appears), rename it. Known so far:
+
+| Game | Loader name |
+|---|---|
+| *DOOM: The Dark Ages* | `version.dll` |
+| *007 First Light* | `dinput8.dll` |
+
+Use only one name at a time; two copies would load the mod twice.
 
 If you use NVIDIA App's **DLSS Override** for the game, turn it off; it can
 swap in a different Streamline plugin underneath the mod.
