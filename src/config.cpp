@@ -19,10 +19,13 @@ Settings Load(const wchar_t* executableDirectory) noexcept
     path += L"RTX40MFG.ini";
 
     const UINT multiplier = GetPrivateProfileIntW(
-        L"MFG", L"Multiplier", kMinimumMultiplier, path.c_str());
-    settings.multiplier = std::clamp(static_cast<uint32_t>(multiplier),
-        kMinimumMultiplier, kMaximumMultiplier);
+        L"MFG", L"Multiplier", 0, path.c_str());
+    settings.multiplier = multiplier == 0 ? 0u
+        : std::clamp(static_cast<uint32_t>(multiplier),
+            kMinimumMultiplier, kMaximumMultiplier);
     settings.log = GetPrivateProfileIntW(L"MFG", L"Log", 1, path.c_str()) != 0;
+    settings.legacyNgxPatch = GetPrivateProfileIntW(
+        L"MFG", L"LegacyNgxPatch", 0, path.c_str()) != 0;
     return settings;
 }
 }

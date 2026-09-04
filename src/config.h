@@ -11,8 +11,15 @@ inline constexpr uint32_t kMaximumMultiplier = 4;
 
 struct Settings
 {
-    uint32_t multiplier = kMinimumMultiplier;
+    // 0 = follow the game's own request. Once the arch gates raise the
+    // advertised maximum, a game's menu may expose 2x..6x itself; that
+    // choice should be the player's, not overridden here.
+    uint32_t multiplier = 0;
     bool log = true;
+    // The device-support NOP inherited from upstream. It matches on some
+    // providers but is not what raises the frame count, and its exact effect
+    // is undocumented -- opt-in only.
+    bool legacyNgxPatch = false;
 };
 
 // Reads RTX40MFG.ini beside the executable. Missing file yields defaults.

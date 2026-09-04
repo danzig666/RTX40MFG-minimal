@@ -171,6 +171,74 @@ const wchar_t* ResultName(sl::Result result) noexcept
     return index < _countof(kResultNames) ? kResultNames[index] : L"unknown";
 }
 
+void DescribeStatus(sl::DLSSGStatus status, wchar_t* out, size_t count) noexcept
+{
+    const uint32_t bits = static_cast<uint32_t>(status);
+    if (bits == 0)
+    {
+        wcscpy_s(out, count, L"eOk");
+        return;
+    }
+    out[0] = L'\0';
+    struct Flag { uint32_t bit; const wchar_t* name; };
+    static constexpr Flag kFlags[] = {
+        {1u << 0, L"ResolutionTooLow"},
+        {1u << 1, L"ReflexNotDetectedAtRuntime"},
+        {1u << 2, L"HDRFormatNotSupported"},
+        {1u << 3, L"CommonConstantsInvalid"},
+        {1u << 4, L"GetCurrentBackBufferIndexNotCalled"},
+        {1u << 5, L"Reserved5"},
+    };
+    for (const Flag& flag : kFlags)
+    {
+        if ((bits & flag.bit) == 0)
+            continue;
+        if (out[0])
+            wcscat_s(out, count, L"|");
+        wcscat_s(out, count, flag.name);
+    }
+}
+
+// What DLSS-G is actually doing, as opposed to what it accepted. The one
+// number that settles "accepted but no visible change": how many frames it
+// really presented per rendered frame.
+void LogState(const sl::ViewportHandle& viewport,
+    const sl::DLSSGOptions& options, const wchar_t* when) noexcept
+{
+    auto* getState = gGetState.load(std::memory_order_acquire);
+    if (!getState)
+    {
+        mfglog::Write(L"  [%s] slDLSSGGetState not resolved by the game; "
+            L"cannot read the presented frame count", when);
+        return;
+    }
+    sl::DLSSGState state{};
+    const sl::Result result = getState(viewport, state, &options);
+    if (result != sl::Result::eOk)
+    {
+        mfglog::Write(L"  [%s] slDLSSGGetState failed: %u (%s)", when,
+            static_cast<uint32_t>(result), ResultName(result));
+        return;
+    }
+    wchar_t status[192]{};
+    DescribeStatus(state.status, status, _countof(status));
+    mfglog::Write(L"  [%s] DLSSGState: status=%s presented=%u max=%u "
+        L"minWH=%u vsyncOk=%u vram=%lluMB",
+        when, status, state.numFramesActuallyPresented,
+        state.numFramesToGenerateMax, state.minWidthOrHeight,
+        static_cast<uint32_t>(state.bIsVsyncSupportAvailable),
+        static_cast<unsigned long long>(
+            state.estimatedVRAMUsageInBytes / (1024ull * 1024ull)));
+    if (state.numFramesActuallyPresented <= 1
+        && options.numFramesToGenerate >= 1)
+    {
+        mfglog::Write(L"  [%s]   ^ presented<=1 while %u generated frame(s) "
+            L"requested: DLSS-G accepted the request but is not producing "
+            L"frames. A non-eOk status above names the reason.",
+            when, options.numFramesToGenerate);
+    }
+}
+
 sl::Result HookSetOptions(const sl::ViewportHandle& viewport,
     const sl::DLSSGOptions& options)
 {
@@ -183,16 +251,36 @@ sl::Result HookSetOptions(const sl::ViewportHandle& viewport,
     if (options.mode == sl::DLSSGMode::eOff)
         return original(viewport, options);
 
-    sl::DLSSGOptions adjusted = CopyKnownOptions(options);
-    adjusted.mode = sl::DLSSGMode::eOn;
-    adjusted.numFramesToGenerate = EffectiveMultiplier() - 1;
-
-    const sl::Result result = original(viewport, adjusted);
+    const uint32_t multiplier = EffectiveMultiplier();
     const uint64_t call =
         gSetOptionsCalls.fetch_add(1, std::memory_order_relaxed) + 1;
     // Log the first call and then powers of two, so a game that reapplies
     // options every frame does not fill the log.
     const bool report = call == 1 || (call & (call - 1)) == 0;
+
+    // Follow the game: pass its request through untouched, only observe.
+    if (multiplier == 0)
+    {
+        const sl::Result passthrough = original(viewport, options);
+        if (report)
+        {
+            mfglog::Write(L"slDLSSGSetOptions call=%llu gameMode=%u "
+                L"numFramesToGenerate=%u (game's own) result=%u (%s)",
+                static_cast<unsigned long long>(call),
+                static_cast<uint32_t>(options.mode),
+                options.numFramesToGenerate,
+                static_cast<uint32_t>(passthrough), ResultName(passthrough));
+            if (passthrough == sl::Result::eOk && call >= 64)
+                LogState(viewport, options, L"state");
+        }
+        return passthrough;
+    }
+
+    sl::DLSSGOptions adjusted = CopyKnownOptions(options);
+    adjusted.mode = sl::DLSSGMode::eOn;
+    adjusted.numFramesToGenerate = multiplier - 1;
+
+    const sl::Result result = original(viewport, adjusted);
 
     if (result == sl::Result::eOk)
     {
@@ -203,6 +291,9 @@ sl::Result HookSetOptions(const sl::ViewportHandle& viewport,
                 static_cast<unsigned long long>(call),
                 static_cast<uint32_t>(options.mode),
                 options.numFramesToGenerate, adjusted.numFramesToGenerate);
+            // Give DLSS-G a few frames to actually start before reading it.
+            if (call >= 64)
+                LogState(viewport, adjusted, L"state");
         }
         return result;
     }
@@ -321,6 +412,8 @@ uint32_t EffectiveMultiplier() noexcept
 {
     const uint32_t requested =
         gRequestedMultiplier.load(std::memory_order_acquire);
+    if (requested == 0)
+        return 0; // follow the game
     const uint32_t wrapperMaximum = patches::SafeMaximumMultiplier(
         gWrapperCompiledMaximum.load(std::memory_order_acquire));
     return std::clamp(std::min(requested, wrapperMaximum),

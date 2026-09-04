@@ -31,7 +31,8 @@
 #include <string>
 #include <vector>
 
-std::atomic<uint32_t> gRequestedMultiplier{config::kMinimumMultiplier};
+std::atomic<uint32_t> gRequestedMultiplier{0};
+std::atomic<bool> gLegacyNgxPatch{false};
 
 namespace
 {
@@ -175,7 +176,11 @@ void InspectModule(HMODULE module)
         // The older device-support pattern is kept because it still matches on
         // some provider builds, but it is not what does the work.
         patches::PatchArchGates(module, path.c_str());
-        patches::PatchNgxDeviceSupport(module, path.c_str());
+        if (gLegacyNgxPatch.load(std::memory_order_acquire))
+            patches::PatchNgxDeviceSupport(module, path.c_str());
+        else
+            mfglog::Write(L"Legacy NGX device-support patch: skipped "
+                L"(LegacyNgxPatch=0)");
         ngx::InstallCreateFeatureHooks(module, path.c_str());
     }
 }
@@ -281,14 +286,19 @@ void Initialize()
 
     const config::Settings settings = config::Load(gExecutableDirectory.c_str());
     gRequestedMultiplier.store(settings.multiplier, std::memory_order_release);
+    gLegacyNgxPatch.store(settings.legacyNgxPatch, std::memory_order_release);
     if (settings.log)
     {
         mfglog::Open(gExecutableDirectory.c_str());
         ada_patch::SetLogCallback(&mfglog::WriteMessage);
     }
 
-    mfglog::Write(L"RTX40MFG %s -- requested multiplier %ux",
-        MFG_VERSION_STRING, settings.multiplier);
+    if (settings.multiplier == 0)
+        mfglog::Write(L"RTX40MFG %s -- multiplier: follow the game",
+            MFG_VERSION_STRING);
+    else
+        mfglog::Write(L"RTX40MFG %s -- forced multiplier %ux",
+            MFG_VERSION_STRING, settings.multiplier);
     mfglog::Write(L"Host: %s", executable.c_str());
 
     if (MH_Initialize() != MH_OK)
