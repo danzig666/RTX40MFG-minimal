@@ -287,6 +287,10 @@ void Initialize()
     const config::Settings settings = config::Load(gExecutableDirectory.c_str());
     gRequestedMultiplier.store(settings.multiplier, std::memory_order_release);
     gLegacyNgxPatch.store(settings.legacyNgxPatch, std::memory_order_release);
+    ngx::SetApplyTemporalPatch(settings.adaTemporalPatch);
+    if (!settings.adaTemporalPatch)
+        mfglog::Write(L"AdaTemporalPatch=0: the rebuilt Ada kernel will NOT be "
+            L"published (diagnostic run)");
     if (settings.log)
     {
         mfglog::Open(gExecutableDirectory.c_str());

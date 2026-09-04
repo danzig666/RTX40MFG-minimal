@@ -20,6 +20,10 @@ struct Settings
     // providers but is not what raises the frame count, and its exact effect
     // is undocumented -- opt-in only.
     bool legacyNgxPatch = false;
+    // Diagnostic: 0 skips the Ada temporal correction entirely. Generation
+    // then uses NVIDIA's stock Ada kernel (midpoint artifacts at 3x+), which
+    // isolates whether the rebuilt kernel is what stops frames appearing.
+    bool adaTemporalPatch = true;
 };
 
 // Reads RTX40MFG.ini beside the executable. Missing file yields defaults.

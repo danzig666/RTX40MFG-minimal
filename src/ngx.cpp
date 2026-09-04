@@ -36,10 +36,21 @@ namespace
 //       VkDevice, VkCommandBuffer, NVSDK_NGX_Feature,
 //       NVSDK_NGX_Parameter*, NVSDK_NGX_Handle**);
 //
+//   NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(
+//       ID3D12GraphicsCommandList*, const NVSDK_NGX_Handle*,
+//       const NVSDK_NGX_Parameter*, PFN_NVSDK_NGX_ProgressCallback);
+//   NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(
+//       VkCommandBuffer, const NVSDK_NGX_Handle*,
+//       const NVSDK_NGX_Parameter*, PFN_NVSDK_NGX_ProgressCallback);
+//
 // NVSDK_NGX_Result carries values above INT_MAX, so it is an unsigned enum.
 using NgxResult = uint32_t;
 constexpr uint32_t kFeatureFrameGeneration = 11;
+constexpr NgxResult kNgxResultSuccess = 0x1u;
 constexpr NgxResult kNgxResultFail = 0xBAD00000u;
+
+using NgxEvaluateFeatureFn = NgxResult (*)(void* commandList,
+    const void* handle, const void* parameters, void* callback);
 
 using NgxD3D12CreateFeatureFn = NgxResult (*)(void* commandList,
     uint32_t feature, void* parameters, void** outHandle);
@@ -52,6 +63,15 @@ using NgxVkCreateFeature1Fn = NgxResult (*)(void* device, void* commandBuffer,
 std::atomic<NgxD3D12CreateFeatureFn> gOriginalD3D12Create{nullptr};
 std::atomic<NgxVkCreateFeatureFn> gOriginalVkCreate{nullptr};
 std::atomic<NgxVkCreateFeature1Fn> gOriginalVkCreate1{nullptr};
+std::atomic<NgxEvaluateFeatureFn> gOriginalD3D12Evaluate{nullptr};
+std::atomic<NgxEvaluateFeatureFn> gOriginalVkEvaluate{nullptr};
+
+// The handle NGX returned for the frame-generation feature, so Evaluate calls
+// for it can be told apart from DLSS Super Resolution traffic.
+std::atomic<const void*> gFrameGenerationHandle{nullptr};
+std::atomic<uint64_t> gFrameGenerationEvaluates{0};
+std::atomic<uint64_t> gFrameGenerationEvaluateFailures{0};
+std::atomic<bool> gApplyTemporalPatch{true};
 
 std::atomic<HMODULE> gProvider{nullptr};
 std::wstring gProviderPath;
@@ -121,6 +141,14 @@ void PrepareProvider(void* d3d12CommandList, const wchar_t* api) noexcept
             return;
         }
 
+        if (!gApplyTemporalPatch.load(std::memory_order_acquire))
+        {
+            mfglog::Write(L"%s: Ada temporal patch SKIPPED (AdaTemporalPatch=0); "
+                L"the stock Ada kernel runs -- expect midpoint artifacts at "
+                L"3x+, but this isolates whether the rebuilt kernel is what "
+                L"stops generation", api);
+            return;
+        }
         const bool patched = ada_patch::PatchProvider(provider, path);
         const uint32_t code = ada_patch::FailureCode();
         mfglog::Write(L"%s: Ada temporal patch: ready=%d failure=%u (%s): %s",
@@ -136,6 +164,54 @@ void NoteFrameGenerationCreate(const wchar_t* api) noexcept
         mfglog::Write(L"%s: CreateFeature(FrameGeneration) intercepted", api);
 }
 
+// What NVIDIA actually said about creating the feature. A failure here is
+// silent to the game's UI and to Streamline's own state: options are still
+// accepted, but nothing ever evaluates.
+void ReportFrameGenerationCreate(const wchar_t* api, NgxResult result,
+    void** outHandle) noexcept
+{
+    const void* handle = outHandle ? *outHandle : nullptr;
+    if (result == kNgxResultSuccess)
+    {
+        gFrameGenerationHandle.store(handle, std::memory_order_release);
+        mfglog::Write(L"%s: CreateFeature(FrameGeneration) -> SUCCESS "
+            L"handle=%p", api, handle);
+    }
+    else
+    {
+        mfglog::Write(L"%s: CreateFeature(FrameGeneration) -> FAILED "
+            L"result=0x%08X. NVIDIA rejected the feature; nothing will "
+            L"generate. If the Ada temporal patch was applied just before "
+            L"this, retry with AdaTemporalPatch=0 in RTX40MFG.ini.",
+            api, result);
+    }
+}
+
+// Counts Evaluate calls made for the frame-generation handle. Zero means the
+// wrapper never asks NGX to generate; failures mean it asks and is refused.
+NgxResult TrackFrameGenerationEvaluate(const wchar_t* api,
+    const void* handle, NgxResult result) noexcept
+{
+    if (!handle || handle != gFrameGenerationHandle.load(
+            std::memory_order_acquire))
+        return result;
+    const uint64_t call =
+        gFrameGenerationEvaluates.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (result != kNgxResultSuccess)
+        gFrameGenerationEvaluateFailures.fetch_add(1, std::memory_order_relaxed);
+    if (call == 1 || (call & (call - 1)) == 0)
+    {
+        mfglog::Write(L"%s: EvaluateFeature(FrameGeneration) call=%llu "
+            L"result=0x%08X%s failures=%llu", api,
+            static_cast<unsigned long long>(call), result,
+            result == kNgxResultSuccess ? L" (SUCCESS)" : L" (FAILED)",
+            static_cast<unsigned long long>(
+                gFrameGenerationEvaluateFailures.load(
+                    std::memory_order_relaxed)));
+    }
+    return result;
+}
+
 NgxResult HookD3D12CreateFeature(void* commandList, uint32_t feature,
     void* parameters, void** outHandle)
 {
@@ -144,12 +220,13 @@ NgxResult HookD3D12CreateFeature(void* commandList, uint32_t feature,
         return kNgxResultFail;
     // The provider also carries DLSS Super Resolution and other feature
     // traffic. Those calls must reach NVIDIA completely untouched.
-    if (feature == kFeatureFrameGeneration)
-    {
-        NoteFrameGenerationCreate(L"NGX D3D12");
-        PrepareProvider(commandList, L"NGX D3D12");
-    }
-    return original(commandList, feature, parameters, outHandle);
+    if (feature != kFeatureFrameGeneration)
+        return original(commandList, feature, parameters, outHandle);
+    NoteFrameGenerationCreate(L"NGX D3D12");
+    PrepareProvider(commandList, L"NGX D3D12");
+    const NgxResult result = original(commandList, feature, parameters, outHandle);
+    ReportFrameGenerationCreate(L"NGX D3D12", result, outHandle);
+    return result;
 }
 
 NgxResult HookVkCreateFeature(void* commandBuffer, uint32_t feature,
@@ -158,12 +235,13 @@ NgxResult HookVkCreateFeature(void* commandBuffer, uint32_t feature,
     auto* original = gOriginalVkCreate.load(std::memory_order_acquire);
     if (!original)
         return kNgxResultFail;
-    if (feature == kFeatureFrameGeneration)
-    {
-        NoteFrameGenerationCreate(L"NGX Vulkan");
-        PrepareProvider(nullptr, L"NGX Vulkan");
-    }
-    return original(commandBuffer, feature, parameters, outHandle);
+    if (feature != kFeatureFrameGeneration)
+        return original(commandBuffer, feature, parameters, outHandle);
+    NoteFrameGenerationCreate(L"NGX Vulkan");
+    PrepareProvider(nullptr, L"NGX Vulkan");
+    const NgxResult result = original(commandBuffer, feature, parameters, outHandle);
+    ReportFrameGenerationCreate(L"NGX Vulkan", result, outHandle);
+    return result;
 }
 
 NgxResult HookVkCreateFeature1(void* device, void* commandBuffer,
@@ -172,12 +250,33 @@ NgxResult HookVkCreateFeature1(void* device, void* commandBuffer,
     auto* original = gOriginalVkCreate1.load(std::memory_order_acquire);
     if (!original)
         return kNgxResultFail;
-    if (feature == kFeatureFrameGeneration)
-    {
-        NoteFrameGenerationCreate(L"NGX Vulkan1");
-        PrepareProvider(nullptr, L"NGX Vulkan1");
-    }
-    return original(device, commandBuffer, feature, parameters, outHandle);
+    if (feature != kFeatureFrameGeneration)
+        return original(device, commandBuffer, feature, parameters, outHandle);
+    NoteFrameGenerationCreate(L"NGX Vulkan1");
+    PrepareProvider(nullptr, L"NGX Vulkan1");
+    const NgxResult result = original(device, commandBuffer, feature, parameters, outHandle);
+    ReportFrameGenerationCreate(L"NGX Vulkan1", result, outHandle);
+    return result;
+}
+
+NgxResult HookD3D12EvaluateFeature(void* commandList, const void* handle,
+    const void* parameters, void* callback)
+{
+    auto* original = gOriginalD3D12Evaluate.load(std::memory_order_acquire);
+    if (!original)
+        return kNgxResultFail;
+    return TrackFrameGenerationEvaluate(L"NGX D3D12", handle,
+        original(commandList, handle, parameters, callback));
+}
+
+NgxResult HookVkEvaluateFeature(void* commandBuffer, const void* handle,
+    const void* parameters, void* callback)
+{
+    auto* original = gOriginalVkEvaluate.load(std::memory_order_acquire);
+    if (!original)
+        return kNgxResultFail;
+    return TrackFrameGenerationEvaluate(L"NGX Vulkan", handle,
+        original(commandBuffer, handle, parameters, callback));
 }
 
 // Installs one detour, publishing the trampoline before the hook goes live so
@@ -234,9 +333,27 @@ bool InstallCreateFeatureHooks(HMODULE provider, const wchar_t* path) noexcept
         mfglog::Write(L"No NGX CreateFeature entry could be hooked: %s", path);
         return false;
     }
+
+    // Evaluate is observed only -- forwarded untouched, counted for the
+    // frame-generation handle. Missing entries are not fatal.
+    const bool evalD3D12 = InstallEntry(provider,
+        "NVSDK_NGX_D3D12_EvaluateFeature",
+        reinterpret_cast<void*>(&HookD3D12EvaluateFeature),
+        gOriginalD3D12Evaluate, L"NGX D3D12 EvaluateFeature", path);
+    const bool evalVulkan = InstallEntry(provider,
+        "NVSDK_NGX_VULKAN_EvaluateFeature",
+        reinterpret_cast<void*>(&HookVkEvaluateFeature),
+        gOriginalVkEvaluate, L"NGX Vulkan EvaluateFeature", path);
+
     gHookInstalled.store(true, std::memory_order_release);
-    mfglog::Write(L"NGX entries hooked: d3d12=%d vulkan=%d vulkan1=%d",
-        d3d12, vulkan, vulkan1);
+    mfglog::Write(L"NGX entries hooked: create d3d12=%d vulkan=%d vulkan1=%d; "
+        L"evaluate d3d12=%d vulkan=%d",
+        d3d12, vulkan, vulkan1, evalD3D12, evalVulkan);
     return true;
+}
+
+void SetApplyTemporalPatch(bool apply) noexcept
+{
+    gApplyTemporalPatch.store(apply, std::memory_order_release);
 }
 }

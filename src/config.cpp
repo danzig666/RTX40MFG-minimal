@@ -26,6 +26,8 @@ Settings Load(const wchar_t* executableDirectory) noexcept
     settings.log = GetPrivateProfileIntW(L"MFG", L"Log", 1, path.c_str()) != 0;
     settings.legacyNgxPatch = GetPrivateProfileIntW(
         L"MFG", L"LegacyNgxPatch", 0, path.c_str()) != 0;
+    settings.adaTemporalPatch = GetPrivateProfileIntW(
+        L"MFG", L"AdaTemporalPatch", 1, path.c_str()) != 0;
     return settings;
 }
 }
