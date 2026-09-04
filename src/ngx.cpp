@@ -68,14 +68,16 @@ void PrepareProvider(void* commandList) noexcept
             ? L"(unknown)" : gProviderPath.c_str();
         if (!AdapterFromCommandList(commandList))
         {
-            mfglog::Write(L"Ada verification failed at CreateFeature "
-                L"(failure=%u); leaving the provider untouched",
-                ada_patch::FailureCode());
+            const uint32_t code = ada_patch::FailureCode();
+            mfglog::Write(L"Ada verification failed at CreateFeature: "
+                L"failure=%u (%s); leaving the provider untouched",
+                code, ada_patch::FailureName(code));
             return;
         }
         const bool patched = ada_patch::PatchProvider(provider, path);
-        mfglog::Write(L"Ada temporal patch: ready=%d failure=%u: %s",
-            patched, ada_patch::FailureCode(), path);
+        const uint32_t code = ada_patch::FailureCode();
+        mfglog::Write(L"Ada temporal patch: ready=%d failure=%u (%s): %s",
+            patched, code, ada_patch::FailureName(code), path);
     });
 }
 

@@ -25,6 +25,7 @@
 #include <MinHook.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -92,6 +93,23 @@ bool IsDlssgProvider(HMODULE module)
         && GetProcAddress(module, "NVSDK_NGX_GetGPUArchitecture") != nullptr;
 }
 
+// Printed whenever a provider is rejected, so a report says what to swap to.
+void LogSupportedProviderVersions()
+{
+    std::wstring list;
+    for (const auto& supported : provider_policy::kSupportedVersions)
+    {
+        wchar_t entry[32]{};
+        _snwprintf_s(entry, _countof(entry), _TRUNCATE, L"%s%u.%u.%u",
+            list.empty() ? L"" : L", ",
+            supported.major, supported.minor, supported.build);
+        list += entry;
+    }
+    mfglog::Write(L"  Supported provider versions: %s", list.c_str());
+    mfglog::Write(L"  Replace nvngx_dlssg.dll in the game folder with a "
+        L"genuine NVIDIA-signed build at one of those versions.");
+}
+
 void InspectModule(HMODULE module)
 {
     if (!module)
@@ -123,12 +141,28 @@ void InspectModule(HMODULE module)
 
     if (IsDlssgProvider(module))
     {
+        provider_policy::VersionTriplet version{};
+        const bool haveVersion =
+            provider_policy::ReadProviderVersion(path.c_str(), version);
+        if (haveVersion)
+        {
+            mfglog::Write(L"DLSS-G provider found: version %u.%u.%u -- %s",
+                version.major, version.minor, version.build, path.c_str());
+        }
+        else
+        {
+            mfglog::Write(L"DLSS-G provider found but its file version could "
+                L"not be read -- %s", path.c_str());
+        }
+
         if (!provider_policy::IsSupportedProvider(module, path.c_str()))
         {
-            mfglog::Write(L"DLSS-G provider version is not supported; "
-                L"leaving it untouched: %s", path.c_str());
+            mfglog::Write(L"  ^ NOT a supported version; leaving it untouched. "
+                L"No frames will be unlocked.");
+            LogSupportedProviderVersions();
             return;
         }
+        mfglog::Write(L"  ^ supported; patching");
         patches::PatchNgxDeviceSupport(module, path.c_str());
         ngx::InstallCreateFeatureHook(module, path.c_str());
     }

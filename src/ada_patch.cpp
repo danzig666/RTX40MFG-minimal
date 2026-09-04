@@ -1026,8 +1026,10 @@ bool PatchProvider(HMODULE module, const wchar_t* suppliedPath) noexcept
     auto fail = [&](Failure failure) noexcept {
         SetFailure(failure);
         FreeLibrary(pinned);
-        Log(L"Ada temporal patch rejected provider: failure=%u path=%s",
-            static_cast<unsigned>(failure), path && *path ? path : L"(unknown)");
+        Log(L"Ada temporal patch rejected provider: failure=%u (%s) path=%s",
+            static_cast<unsigned>(failure),
+            FailureName(static_cast<uint32_t>(failure)),
+            path && *path ? path : L"(unknown)");
         return false;
     };
     if (!provider_policy::IsSupportedProvider(pinned, path))
@@ -1172,6 +1174,27 @@ bool Ready() noexcept
 uint32_t FailureCode() noexcept
 {
     return gFailure.load(std::memory_order_acquire);
+}
+
+const wchar_t* FailureName(uint32_t code) noexcept
+{
+    switch (static_cast<Failure>(code))
+    {
+    case Failure::eNone:               return L"none";
+    case Failure::eAdapterUnavailable: return L"adapter unavailable";
+    case Failure::eAdapterNotAda:      return L"adapter is not Ada (SM 8.9)";
+    case Failure::eProviderVersion:    return L"provider version not supported";
+    case Failure::eProviderLayout:     return L"provider layout not recognized";
+    case Failure::eSourceIdentity:     return L"source fatbin/PTX hash mismatch";
+    case Failure::eDecompression:      return L"fatbin decompression failed";
+    case Failure::eTemporalLayout:     return L"temporal PTX layout not recognized";
+    case Failure::eOutputIdentity:     return L"rebuilt fatbin hash mismatch";
+    case Failure::eAllocation:         return L"allocation failed";
+    case Failure::ePublication:        return L"descriptor publication failed";
+    case Failure::eRestartRequired:    return L"restart required";
+    case Failure::eProviderNotReady:   return L"provider not initialized yet";
+    }
+    return L"unknown";
 }
 
 }

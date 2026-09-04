@@ -33,4 +33,7 @@ bool PatchProvider(HMODULE module, const wchar_t* path) noexcept;
 bool AdapterVerified() noexcept;
 bool Ready() noexcept;
 uint32_t FailureCode() noexcept;
+
+// Human-readable name for a FailureCode(), for logs and bug reports.
+const wchar_t* FailureName(uint32_t code) noexcept;
 }
