@@ -10,14 +10,12 @@
 > Nothing here is known to work. It may do nothing, crash the game, hang the
 > GPU, or produce a broken image. If you run it, you are the first test.
 >
-> Specifically unverified: whether `NVSDK_NGX_Feature_FrameGeneration = 11`
-> matches the provider in play, whether hooking `slGetFeatureFunction` lands
-> before the game caches the setter, and whether the rebuilt Ada kernel is
-> accepted by NVIDIA's runtime at all.
->
-> The **Vulkan** path (v0.2) is less proven still — its two `CreateFeature`
-> ABIs were reconstructed from the upstream project's forwarding shim rather
-> than from NVIDIA's headers, which were not available here.
+> The NGX ABI is no longer guesswork — the feature ID, the result codes and
+> all three `CreateFeature` signatures are verified against NVIDIA's own SDK
+> headers (see below). What remains unverified is **behaviour**: whether
+> hooking `slGetFeatureFunction` lands before the game caches the setter,
+> whether `slSetVulkanInfo` fires in a given Vulkan game, and whether NVIDIA's
+> runtime accepts the rebuilt Ada kernel at all.
 >
 > Reports — success or failure, with `RTX40MFG.log` attached — are the whole
 > point of this release.
@@ -155,6 +153,34 @@ scope anyway, since the frame-count clamp lives in the Streamline wrapper.
 
 `vulkan-1.dll` is loaded dynamically and only when a Vulkan game is present —
 the binary has no Vulkan import and needs no Vulkan SDK to build.
+
+### NGX ABI
+
+The mod mirrors three NGX entry points rather than depending on the NGX SDK.
+Those mirrors are verified against the official
+[NVIDIA DLSS SDK](https://github.com/NVIDIA/DLSS) (NGX API 1.5.0, commit
+`a291cc7`), headers `nvsdk_ngx_defs.h`, `nvsdk_ngx.h` and `nvsdk_ngx_vk.h`:
+
+```c
+NVSDK_NGX_Feature_FrameGeneration = 11
+NVSDK_NGX_Result_Success          = 0x1
+NVSDK_NGX_Result_Fail             = 0xBAD00000
+NVSDK_CONV                        = __cdecl
+
+NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(
+    ID3D12GraphicsCommandList*, NVSDK_NGX_Feature,
+    NVSDK_NGX_Parameter*, NVSDK_NGX_Handle**);
+NVSDK_NGX_Result NVSDK_NGX_VULKAN_CreateFeature(
+    VkCommandBuffer, NVSDK_NGX_Feature,
+    NVSDK_NGX_Parameter*, NVSDK_NGX_Handle**);
+NVSDK_NGX_Result NVSDK_NGX_VULKAN_CreateFeature1(
+    VkDevice, VkCommandBuffer, NVSDK_NGX_Feature,
+    NVSDK_NGX_Parameter*, NVSDK_NGX_Handle**);
+```
+
+`nvsdk_ngx_helpers_dlssg.h` confirms DLSS-G is created through those ordinary
+`CreateFeature` entries with the frame-generation feature ID, which is exactly
+what this mod intercepts.
 
 ## Configuration
 

@@ -16,18 +16,37 @@ namespace
 {
 // Minimal mirror of the NGX entries this mod touches. Declaring them here
 // keeps the build dependent on the Streamline SDK headers alone, rather than
-// also requiring NVIDIA's NGX SDK submodule.
+// also requiring NVIDIA's NGX SDK.
 //
-// NVSDK_NGX_Feature_FrameGeneration is 11 in NVIDIA's public feature enum.
+// Verified against the NVIDIA DLSS SDK (github.com/NVIDIA/DLSS, NGX API 1.5.0,
+// commit a291cc7), headers nvsdk_ngx_defs.h / nvsdk_ngx.h / nvsdk_ngx_vk.h:
+//
+//   NVSDK_NGX_Feature_FrameGeneration = 11
+//   NVSDK_NGX_Result_Success          = 0x1
+//   NVSDK_NGX_Result_Fail             = 0xBAD00000
+//   NVSDK_CONV                        = __cdecl
+//
+//   NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(
+//       ID3D12GraphicsCommandList*, NVSDK_NGX_Feature,
+//       NVSDK_NGX_Parameter*, NVSDK_NGX_Handle**);
+//   NVSDK_NGX_Result NVSDK_NGX_VULKAN_CreateFeature(
+//       VkCommandBuffer, NVSDK_NGX_Feature,
+//       NVSDK_NGX_Parameter*, NVSDK_NGX_Handle**);
+//   NVSDK_NGX_Result NVSDK_NGX_VULKAN_CreateFeature1(
+//       VkDevice, VkCommandBuffer, NVSDK_NGX_Feature,
+//       NVSDK_NGX_Parameter*, NVSDK_NGX_Handle**);
+//
+// NVSDK_NGX_Result carries values above INT_MAX, so it is an unsigned enum.
+using NgxResult = uint32_t;
 constexpr uint32_t kFeatureFrameGeneration = 11;
+constexpr NgxResult kNgxResultFail = 0xBAD00000u;
 
-using NgxD3D12CreateFeatureFn = int (*)(void* commandList, uint32_t feature,
-    void* parameters, void** outHandle);
-// VkCommandBuffer, feature, parameters, out.
-using NgxVkCreateFeatureFn = int (*)(void* commandBuffer, uint32_t feature,
-    void* parameters, void** outHandle);
+using NgxD3D12CreateFeatureFn = NgxResult (*)(void* commandList,
+    uint32_t feature, void* parameters, void** outHandle);
+using NgxVkCreateFeatureFn = NgxResult (*)(void* commandBuffer,
+    uint32_t feature, void* parameters, void** outHandle);
 // CreateFeature1 prepends the VkDevice.
-using NgxVkCreateFeature1Fn = int (*)(void* device, void* commandBuffer,
+using NgxVkCreateFeature1Fn = NgxResult (*)(void* device, void* commandBuffer,
     uint32_t feature, void* parameters, void** outHandle);
 
 std::atomic<NgxD3D12CreateFeatureFn> gOriginalD3D12Create{nullptr};
@@ -117,12 +136,12 @@ void NoteFrameGenerationCreate(const wchar_t* api) noexcept
         mfglog::Write(L"%s: CreateFeature(FrameGeneration) intercepted", api);
 }
 
-int HookD3D12CreateFeature(void* commandList, uint32_t feature,
+NgxResult HookD3D12CreateFeature(void* commandList, uint32_t feature,
     void* parameters, void** outHandle)
 {
     auto* original = gOriginalD3D12Create.load(std::memory_order_acquire);
     if (!original)
-        return -1;
+        return kNgxResultFail;
     // The provider also carries DLSS Super Resolution and other feature
     // traffic. Those calls must reach NVIDIA completely untouched.
     if (feature == kFeatureFrameGeneration)
@@ -133,12 +152,12 @@ int HookD3D12CreateFeature(void* commandList, uint32_t feature,
     return original(commandList, feature, parameters, outHandle);
 }
 
-int HookVkCreateFeature(void* commandBuffer, uint32_t feature,
+NgxResult HookVkCreateFeature(void* commandBuffer, uint32_t feature,
     void* parameters, void** outHandle)
 {
     auto* original = gOriginalVkCreate.load(std::memory_order_acquire);
     if (!original)
-        return -1;
+        return kNgxResultFail;
     if (feature == kFeatureFrameGeneration)
     {
         NoteFrameGenerationCreate(L"NGX Vulkan");
@@ -147,12 +166,12 @@ int HookVkCreateFeature(void* commandBuffer, uint32_t feature,
     return original(commandBuffer, feature, parameters, outHandle);
 }
 
-int HookVkCreateFeature1(void* device, void* commandBuffer, uint32_t feature,
-    void* parameters, void** outHandle)
+NgxResult HookVkCreateFeature1(void* device, void* commandBuffer,
+    uint32_t feature, void* parameters, void** outHandle)
 {
     auto* original = gOriginalVkCreate1.load(std::memory_order_acquire);
     if (!original)
-        return -1;
+        return kNgxResultFail;
     if (feature == kFeatureFrameGeneration)
     {
         NoteFrameGenerationCreate(L"NGX Vulkan1");
