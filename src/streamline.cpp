@@ -25,6 +25,7 @@ std::atomic<PFun_slDLSSGSetOptions*> gOriginalSetOptions{nullptr};
 std::atomic<uint32_t> gWrapperCompiledMaximum{0};
 std::atomic<bool> gInterposerHooked{false};
 std::atomic<uint64_t> gSetOptionsCalls{0};
+std::atomic<uint64_t> gRejectedRequests{0};
 
 // Stable pointer-sized prefix of sl::VulkanInfo v1-v3. Mirrored here so the
 // core needs no Vulkan SDK header; the fixed ABI offsets are asserted below.
@@ -118,6 +119,57 @@ sl::DLSSGOptions CopyKnownOptions(const sl::DLSSGOptions& source)
     return copy;
 }
 
+// sl::Result names, mirrored from sl_result.h (40 contiguous entries).
+// A raw number in a bug report is nearly useless; a name is not.
+constexpr const wchar_t* kResultNames[] = {
+    L"eOk",
+    L"eErrorIO",
+    L"eErrorDriverOutOfDate",
+    L"eErrorOSOutOfDate",
+    L"eErrorOSDisabledHWS",
+    L"eErrorDeviceNotCreated",
+    L"eErrorNoSupportedAdapterFound",
+    L"eErrorAdapterNotSupported",
+    L"eErrorNoPlugins",
+    L"eErrorVulkanAPI",
+    L"eErrorDXGIAPI",
+    L"eErrorD3DAPI",
+    L"eErrorNRDAPI",
+    L"eErrorNVAPI",
+    L"eErrorReflexAPI",
+    L"eErrorNGXFailed",
+    L"eErrorJSONParsing",
+    L"eErrorMissingProxy",
+    L"eErrorMissingResourceState",
+    L"eErrorInvalidIntegration",
+    L"eErrorMissingInputParameter",
+    L"eErrorNotInitialized",
+    L"eErrorComputeFailed",
+    L"eErrorInitNotCalled",
+    L"eErrorExceptionHandler",
+    L"eErrorInvalidParameter",
+    L"eErrorMissingConstants",
+    L"eErrorDuplicatedConstants",
+    L"eErrorMissingOrInvalidAPI",
+    L"eErrorCommonConstantsMissing",
+    L"eErrorUnsupportedInterface",
+    L"eErrorFeatureMissing",
+    L"eErrorFeatureNotSupported",
+    L"eErrorFeatureMissingHooks",
+    L"eErrorFeatureFailedToLoad",
+    L"eErrorFeatureWrongPriority",
+    L"eErrorFeatureMissingDependency",
+    L"eErrorFeatureManagerInvalidState",
+    L"eErrorInvalidState",
+    L"eWarnOutOfVRAM",
+};
+
+const wchar_t* ResultName(sl::Result result) noexcept
+{
+    const size_t index = static_cast<size_t>(result);
+    return index < _countof(kResultNames) ? kResultNames[index] : L"unknown";
+}
+
 sl::Result HookSetOptions(const sl::ViewportHandle& viewport,
     const sl::DLSSGOptions& options)
 {
@@ -139,16 +191,55 @@ sl::Result HookSetOptions(const sl::ViewportHandle& viewport,
         gSetOptionsCalls.fetch_add(1, std::memory_order_relaxed) + 1;
     // Log the first call and then powers of two, so a game that reapplies
     // options every frame does not fill the log.
-    if (call == 1 || (call & (call - 1)) == 0)
+    const bool report = call == 1 || (call & (call - 1)) == 0;
+
+    if (result == sl::Result::eOk)
     {
-        mfglog::Write(L"slDLSSGSetOptions call=%llu gameMode=%u "
-            L"numFramesToGenerate=%u->%u result=%u",
+        if (report)
+        {
+            mfglog::Write(L"slDLSSGSetOptions call=%llu gameMode=%u "
+                L"numFramesToGenerate=%u->%u result=0 (eOk)",
+                static_cast<unsigned long long>(call),
+                static_cast<uint32_t>(options.mode),
+                options.numFramesToGenerate, adjusted.numFramesToGenerate);
+        }
+        return result;
+    }
+
+    // The multiplied request was rejected. Replay the game's own options so
+    // the game keeps whatever frame generation it asked for instead of losing
+    // it entirely -- and log both results, which says whether the rejection is
+    // caused by the higher frame count or would have happened anyway.
+    const sl::Result fallback = original(viewport, options);
+    gRejectedRequests.fetch_add(1, std::memory_order_relaxed);
+    if (report)
+    {
+        mfglog::Write(L"slDLSSGSetOptions call=%llu gameMode=%u: "
+            L"numFramesToGenerate=%u->%u REJECTED result=%u (%s); "
+            L"replayed the game's own %u -> result=%u (%s)",
             static_cast<unsigned long long>(call),
             static_cast<uint32_t>(options.mode),
             options.numFramesToGenerate, adjusted.numFramesToGenerate,
-            static_cast<uint32_t>(result));
+            static_cast<uint32_t>(result), ResultName(result),
+            options.numFramesToGenerate,
+            static_cast<uint32_t>(fallback), ResultName(fallback));
     }
-    return result;
+    if (call == 1)
+    {
+        if (fallback == sl::Result::eOk)
+        {
+            mfglog::Write(L"  => The game's own request succeeds but the "
+                L"multiplied one does not: the higher frame count is what is "
+                L"being refused. Try a lower Multiplier in RTX40MFG.ini.");
+        }
+        else
+        {
+            mfglog::Write(L"  => The game's own request fails too, so this is "
+                L"not caused by the multiplier. DLSS-G is refusing options at "
+                L"this point regardless of what this mod does.");
+        }
+    }
+    return fallback;
 }
 
 sl::Result HookGetFeatureFunction(sl::Feature feature,
