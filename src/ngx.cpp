@@ -108,9 +108,12 @@ std::atomic<bool> gVerifyAtCreate{true};
 
 std::atomic<HMODULE> gProvider{nullptr};
 std::wstring gProviderPath;
+std::mutex gProviderMutex;
 std::atomic<bool> gHookInstalled{false};
 std::atomic<uint64_t> gFrameGenerationCreates{0};
-std::once_flag gPrepareOnce;
+std::atomic<uint64_t> gEnsureAttempts{0};
+std::atomic<uint32_t> gLastEnsureFailure{0xFFFFFFFFu};
+std::atomic<bool> gNgxHooks{true};
 
 // Resolves the D3D12 device that owns the command list NGX was handed. That
 // is the adapter frame generation will actually run on.
@@ -139,70 +142,84 @@ bool AdapterFromCommandList(void* commandList) noexcept
     return observed;
 }
 
-// Runs once, immediately before NVIDIA builds the frame generation pipeline.
+// Publishes the corrected Ada kernel if everything it needs is in place:
+// the adapter verified (at slSetD3DDevice / slSetVulkanInfo), the provider
+// loaded, and its descriptor table populated. Any trigger may call this; it
+// is idempotent and simply reports "not yet" until all three hold. The
+// provider readies its descriptors during NGX init, so the trigger that
+// usually lands is slDLSSGSetOptions -- called by the game right before the
+// feature is created, and hooked at the Streamline layer with no detour on
+// the provider itself.
 //
-// `d3d12CommandList` is null on the Vulkan routes: a VkCommandBuffer carries
-// no back-pointer to its device, so there the adapter must already have been
-// verified from slSetVulkanInfo.
+// `d3d12CommandList` is only ever non-null from the diagnostic CreateFeature
+// detour, and is used solely as a last-resort adapter source.
+bool EnsureProviderPatchedImpl(const wchar_t* trigger,
+    void* d3d12CommandList) noexcept
+{
+    std::lock_guard lock(gProviderMutex);
+    if (ada_patch::Ready())
+        return true;
+    if (!gApplyTemporalPatch.load(std::memory_order_acquire))
+        return false;
+    HMODULE provider = gProvider.load(std::memory_order_acquire);
+    if (!provider)
+        return false;
+    const wchar_t* path = gProviderPath.empty()
+        ? L"(unknown)" : gProviderPath.c_str();
+
+    bool adapter = ada_patch::AdapterVerified();
+    if (!adapter && d3d12CommandList
+        && gVerifyAtCreate.load(std::memory_order_acquire))
+    {
+        mfglog::Write(L"[%s] adapter not verified earlier; verifying from "
+            L"the command list now (late path)", trigger);
+        adapter = AdapterFromCommandList(d3d12CommandList);
+    }
+
+    const uint64_t attempt =
+        gEnsureAttempts.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool report = attempt == 1 || (attempt & (attempt - 1)) == 0;
+
+    if (!adapter)
+    {
+        const uint32_t code = ada_patch::FailureCode();
+        if (report || code != gLastEnsureFailure.load(std::memory_order_relaxed))
+            mfglog::Write(L"[%s] Ada temporal patch waiting: adapter not "
+                L"verified yet (failure=%u %s)", trigger, code,
+                ada_patch::FailureName(code));
+        gLastEnsureFailure.store(code, std::memory_order_relaxed);
+        return false;
+    }
+
+    const bool patched = ada_patch::PatchProvider(provider, path);
+    const uint32_t code = ada_patch::FailureCode();
+    if (patched)
+    {
+        mfglog::Write(L"[%s] Ada temporal patch: ready=1 (attempt %llu): %s",
+            trigger, static_cast<unsigned long long>(attempt), path);
+    }
+    else if (report || code != gLastEnsureFailure.load(std::memory_order_relaxed))
+    {
+        mfglog::Write(L"[%s] Ada temporal patch not yet: failure=%u (%s), "
+            L"attempt %llu -- will retry at the next trigger", trigger, code,
+            ada_patch::FailureName(code),
+            static_cast<unsigned long long>(attempt));
+    }
+    gLastEnsureFailure.store(code, std::memory_order_relaxed);
+    return patched;
+}
+
 void PrepareProvider(void* d3d12CommandList, const wchar_t* api) noexcept
 {
-    std::call_once(gPrepareOnce, [d3d12CommandList, api]() noexcept {
-        HMODULE provider = gProvider.load(std::memory_order_acquire);
-        const wchar_t* path = gProviderPath.empty()
-            ? L"(unknown)" : gProviderPath.c_str();
-
-        // Prefer the verification done at slSetD3DDevice / slSetVulkanInfo
-        // during Streamline setup. Only if that never ran, and only when
-        // allowed, recover the adapter from the command list here -- that
-        // path initializes CUDA on the render thread in the middle of
-        // NVIDIA's own feature creation, which is a bad moment for it.
-        bool adapter = ada_patch::AdapterVerified();
-        if (adapter)
-        {
-            mfglog::Write(L"%s: adapter already verified during Streamline "
-                L"setup; no CUDA work at CreateFeature", api);
-        }
-        else if (d3d12CommandList
-            && gVerifyAtCreate.load(std::memory_order_acquire))
-        {
-            mfglog::Write(L"%s: adapter NOT verified earlier; verifying from "
-                L"the command list now (late path)", api);
-            adapter = AdapterFromCommandList(d3d12CommandList);
-        }
-        else if (d3d12CommandList)
-        {
-            mfglog::Write(L"%s: adapter not verified and VerifyAtCreate=0; "
-                L"leaving the provider untouched", api);
-        }
-
-        if (!adapter)
-        {
-            const uint32_t code = ada_patch::FailureCode();
-            mfglog::Write(L"%s: Ada verification failed at CreateFeature: "
-                L"failure=%u (%s); leaving the provider untouched",
-                api, code, ada_patch::FailureName(code));
-            if (!d3d12CommandList)
-            {
-                mfglog::Write(L"  On Vulkan the adapter comes from "
-                    L"slSetVulkanInfo. If that hook never ran, the game did "
-                    L"not route Vulkan setup through Streamline.");
-            }
-            return;
-        }
-
-        if (!gApplyTemporalPatch.load(std::memory_order_acquire))
-        {
-            mfglog::Write(L"%s: Ada temporal patch SKIPPED (AdaTemporalPatch=0); "
-                L"the stock Ada kernel runs -- expect midpoint artifacts at "
-                L"3x+, but this isolates whether the rebuilt kernel is what "
-                L"stops generation", api);
-            return;
-        }
-        const bool patched = ada_patch::PatchProvider(provider, path);
-        const uint32_t code = ada_patch::FailureCode();
-        mfglog::Write(L"%s: Ada temporal patch: ready=%d failure=%u (%s): %s",
-            api, patched, code, ada_patch::FailureName(code), path);
-    });
+    if (!gApplyTemporalPatch.load(std::memory_order_acquire))
+    {
+        static std::atomic<bool> said{false};
+        if (!said.exchange(true))
+            mfglog::Write(L"%s: Ada temporal patch SKIPPED "
+                L"(AdaTemporalPatch=0); the stock Ada kernel runs", api);
+        return;
+    }
+    EnsureProviderPatchedImpl(api, d3d12CommandList);
 }
 
 void NoteFrameGenerationCreate(const wchar_t* api) noexcept
@@ -366,14 +383,34 @@ bool InstallEntry(HMODULE module, const char* name, void* replacement,
 }
 }
 
+void RegisterProvider(HMODULE provider, const wchar_t* path) noexcept
+{
+    std::lock_guard lock(gProviderMutex);
+    gProviderPath = path ? path : L"";
+    gProvider.store(provider, std::memory_order_release);
+}
+
+bool EnsureProviderPatched(const wchar_t* trigger) noexcept
+{
+    return EnsureProviderPatchedImpl(trigger, nullptr);
+}
+
+void SetNgxHooks(bool enabled) noexcept
+{
+    gNgxHooks.store(enabled, std::memory_order_release);
+}
+
 bool InstallCreateFeatureHooks(HMODULE provider, const wchar_t* path) noexcept
 {
     if (!provider || gHookInstalled.load(std::memory_order_acquire))
         return false;
-
-    // Everything the detours read has to be in place before any goes live.
-    gProviderPath = path ? path : L"";
-    gProvider.store(provider, std::memory_order_release);
+    RegisterProvider(provider, path);
+    if (!gNgxHooks.load(std::memory_order_acquire))
+    {
+        mfglog::Write(L"NGX CreateFeature/EvaluateFeature detours: SKIPPED "
+            L"(NgxHooks=0); the provider's exports are left untouched");
+        return false;
+    }
 
     const bool d3d12 = InstallEntry(provider, "NVSDK_NGX_D3D12_CreateFeature",
         reinterpret_cast<void*>(&HookD3D12CreateFeature), gOriginalD3D12Create,

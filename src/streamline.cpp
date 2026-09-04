@@ -2,6 +2,7 @@
 #include "ada_patch.h"
 #include "config.h"
 #include "log.h"
+#include "ngx.h"
 #include "patches.h"
 
 #include <sl.h>
@@ -60,6 +61,8 @@ sl::Result HookSetD3DDevice(void* device)
     mfglog::Write(L"slSetD3DDevice: adapter verified=%d failure=%u (%s)",
         verified, ada_patch::FailureCode(),
         ada_patch::FailureName(ada_patch::FailureCode()));
+    if (verified)
+        ngx::EnsureProviderPatched(L"slSetD3DDevice");
     return original(device);
 }
 
@@ -97,6 +100,8 @@ sl::Result HookSetVulkanInfo(const VulkanInfoPrefix& info)
         mfglog::Write(L"slSetVulkanInfo: Vulkan adapter verified=%d "
             L"failure=%u (%s)", verified, ada_patch::FailureCode(),
             ada_patch::FailureName(ada_patch::FailureCode()));
+        if (verified)
+            ngx::EnsureProviderPatched(L"slSetVulkanInfo");
     }
     return original(info);
 }
@@ -268,6 +273,11 @@ sl::Result HookSetOptions(const sl::ViewportHandle& viewport,
     // changes how many frames are generated, never whether they are.
     if (options.mode == sl::DLSSGMode::eOff)
         return original(viewport, options);
+
+    // The game is about to have the feature created. This is the last
+    // Streamline-level moment before that, and needs no detour on the
+    // provider, so it is the primary trigger for the Ada kernel patch.
+    ngx::EnsureProviderPatched(L"slDLSSGSetOptions");
 
     const uint32_t multiplier = EffectiveMultiplier();
     const uint64_t call =

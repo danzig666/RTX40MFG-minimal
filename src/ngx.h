@@ -22,4 +22,16 @@ uint64_t CreateFailures() noexcept;
 // Diagnostic: false never runs adapter verification inside CreateFeature,
 // even when the early Streamline-setup verification did not happen.
 void SetVerifyAtCreate(bool verify) noexcept;
+
+// Makes the provider known without detouring anything in it.
+void RegisterProvider(HMODULE provider, const wchar_t* path) noexcept;
+
+// Publishes the corrected Ada kernel once adapter, provider and its
+// descriptor table are all ready. Idempotent; call from any trigger.
+bool EnsureProviderPatched(const wchar_t* trigger) noexcept;
+
+// false = do not detour the provider's CreateFeature/EvaluateFeature exports
+// at all. Those detours are diagnostic only; the patch itself does not need
+// them.
+void SetNgxHooks(bool enabled) noexcept;
 }

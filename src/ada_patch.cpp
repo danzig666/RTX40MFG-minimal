@@ -918,6 +918,8 @@ bool ObserveAdapterLuid(const LUID& luid, const wchar_t* api) noexcept
         }
         gAdapterLuid.store(packedLuid, std::memory_order_release);
         gAdapterVerified.store(verified, std::memory_order_release);
+        if (verified)
+            SetFailure(Failure::eNone);
         if (!verified)
         {
             gReady.store(false, std::memory_order_release);

@@ -36,6 +36,7 @@ std::atomic<bool> gLegacyNgxPatch{false};
 std::atomic<bool> gArchGates{true};
 std::atomic<bool> gFlipMetering{true};
 std::atomic<bool> gStreamlineMax{true};
+std::atomic<bool> gNgxHooks{true};
 
 namespace
 {
@@ -149,14 +150,16 @@ void InspectModule(HMODULE module)
             if (result.candidate && result.patched)
                 streamline::SetWrapperCompiledMaximum(result.compiledMaximum);
         }
-        else
+        else if (FileNameEquals(path, L"sl.dlss_g.dll")
+            || path.find(L"sl_dlss_g") != std::wstring::npos)
             mfglog::Write(L"Streamline maximum: SKIPPED (StreamlineMax=0): %s",
                 path.c_str());
         // Ada has no hardware flip metering. Without this, 3x and above
         // generate frames that never reach the screen.
         if (gFlipMetering.load(std::memory_order_acquire))
             patches::PatchFlipMetering(module, path.c_str());
-        else
+        else if (FileNameEquals(path, L"sl.dlss_g.dll")
+            || path.find(L"sl_dlss_g") != std::wstring::npos)
             mfglog::Write(L"Flip metering: SKIPPED (FlipMetering=0): %s",
                 path.c_str());
     }
@@ -198,7 +201,11 @@ void InspectModule(HMODULE module)
         else
             mfglog::Write(L"Legacy NGX device-support patch: skipped "
                 L"(LegacyNgxPatch=0)");
+        ngx::RegisterProvider(module, path.c_str());
         ngx::InstallCreateFeatureHooks(module, path.c_str());
+        // Usually too early (descriptors not populated, adapter not yet
+        // verified); harmless, and it wins if everything is already there.
+        ngx::EnsureProviderPatched(L"provider load");
     }
 }
 
@@ -309,6 +316,7 @@ void Initialize()
     gStreamlineMax.store(settings.streamlineMax, std::memory_order_release);
     ngx::SetApplyTemporalPatch(settings.adaTemporalPatch);
     ngx::SetVerifyAtCreate(settings.verifyAtCreate);
+    ngx::SetNgxHooks(settings.ngxHooks);
     if (settings.log)
     {
         mfglog::Open(gExecutableDirectory.c_str());
@@ -323,9 +331,9 @@ void Initialize()
             MFG_VERSION_STRING, settings.multiplier);
     // Every switch, so a log is self-describing without the ini beside it.
     mfglog::Write(L"Switches: ArchGates=%d AdaTemporalPatch=%d FlipMetering=%d "
-        L"StreamlineMax=%d VerifyAtCreate=%d LegacyNgxPatch=%d",
+        L"StreamlineMax=%d NgxHooks=%d VerifyAtCreate=%d LegacyNgxPatch=%d",
         settings.archGates, settings.adaTemporalPatch, settings.flipMetering,
-        settings.streamlineMax, settings.verifyAtCreate,
+        settings.streamlineMax, settings.ngxHooks, settings.verifyAtCreate,
         settings.legacyNgxPatch);
     mfglog::Write(L"Host: %s", executable.c_str());
 

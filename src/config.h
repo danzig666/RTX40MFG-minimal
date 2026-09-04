@@ -35,6 +35,11 @@ struct Settings
     // Diagnostic: 0 never verifies the adapter inside CreateFeature (the
     // late path). Normal runs verify at slSetD3DDevice instead.
     bool verifyAtCreate = true;
+    // 0 = never detour the provider's CreateFeature/EvaluateFeature exports.
+    // Those detours only produce diagnostics; the patch itself does not need
+    // them, and an inline jump written into NVIDIA's entry points is itself a
+    // suspect when creation fails with PlatformError.
+    bool ngxHooks = true;
 };
 
 // Reads RTX40MFG.ini beside the executable. Missing file yields defaults.
