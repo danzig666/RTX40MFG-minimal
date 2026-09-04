@@ -79,9 +79,52 @@ If the log shows the provider was patched but frame pacing looks unchanged,
 toggle Frame Generation off and on, or restart. The DLSS-G feature has to be
 created *after* the patch is published.
 
-Do not replace or bundle a game's Streamline or NVIDIA DLLs. The installed
-provider must be one of the versions listed in `src/provider_policy.h`
-(310.1.0 through 310.9.0).
+## Provider version
+
+The mod patches `nvngx_dlssg.dll`, the NGX **provider** — the file that
+actually contains NVIDIA's DLSS-G implementation. It ships **with the game**,
+not with the driver, usually beside the executable or under a `Streamline` /
+`ThirdParty/Win64` subfolder, alongside `sl.interposer.dll`, `sl.common.dll`
+and `sl.dlss_g.dll`.
+
+Check its version — right-click → Properties → Details → *File version*, or:
+
+```powershell
+Get-ChildItem "<game folder>" -Recurse -Filter nvngx_dlssg.dll |
+  ForEach-Object { "$($_.VersionInfo.FileVersion)  $($_.FullName)" }
+```
+
+Only these are supported (the fourth version component is ignored):
+
+```
+310.1.0  310.2.0  310.2.1  310.3.0  310.4.0  310.5.0  310.5.2
+310.5.3  310.6.0  310.7.0  310.7.128  310.7.129  310.8.0  310.9.0
+```
+
+**310.x is the DLSS 4 generation.** Those providers carry both SM120
+(Blackwell) and SM89 (Ada) code in their fatbin, which is the whole reason this
+works. A 1.x or 3.x provider is DLSS 3 frame generation and has no SM89 payload
+for the temporal correction to operate on — the mod rejects it at the version
+check and leaves it alone. `RTX40MFG.log` prints the version it found and the
+list above whenever it rejects one.
+
+### Swapping to a supported version
+
+If your game ships an unsupported provider, replacing `nvngx_dlssg.dll` in the
+game folder is the normal fix — the same thing DLSS Swapper and manual DLSS
+upgrading do. Points to watch:
+
+- Use a **genuine NVIDIA-signed** DLL. NGX and Streamline verify signatures; a
+  tampered file is rejected before this mod ever sees it.
+- **Back up the original** — some launchers restore or checksum it.
+- Turn off **NVIDIA App → DLSS Override** for that game, or it may supply its
+  own provider instead of the one you placed.
+- The wrapper (`sl.dlss_g.dll`) and provider (`nvngx_dlssg.dll`) version
+  independently. Each is checked separately, so a mismatch shows up in the log
+  rather than misbehaving silently.
+
+Do not bundle NVIDIA or Streamline DLLs *with this mod* — it ships none by
+design, and patches whatever the game loads.
 
 ## Configuration
 
